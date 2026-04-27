@@ -20,10 +20,28 @@ class CoffeeRAG:
         intent = classify_intent(query)
         entities = extract_entities(query, client=self.llm_client)
 
+        if intent == "exploration":
+            return {
+                "intent": intent,
+                "entities": entities,
+                "beans": self.searcher.beans,
+                "news": self.searcher.news_chunks,
+            }
+
+        if intent == "edge_case":
+            sem_beans = self.searcher.search_beans(query, top_k=top_k_beans)
+            sem_news = self.searcher.search_news(query, top_k=2)
+            return {
+                "intent": intent,
+                "entities": entities,
+                "beans": sem_beans,
+                "news": sem_news,
+            }
+
         product_name = entities.get("product")
         roaster_name = entities.get("roaster")
 
-        sem_beans = self.searcher.search_beans(query, top_k=top_k_beans * 2)
+        sem_beans = self.searcher.search_beans(query, top_k=top_k_beans * 3)
         sem_news = self.searcher.search_news(query, top_k=top_k_news)
 
         product_match = None
@@ -34,10 +52,10 @@ class CoffeeRAG:
 
         struct_beans = None
         has_filters = any(entities.get(k) for k in ("origin", "roast", "flavor", "typology", "processing"))
-        if intent in ("product_search", "similar_search") and has_filters:
+        if intent in ("product_search", "similar_search", "comparison") and has_filters:
             struct_beans = structured_filter(self.searcher.beans, entities)
             if not struct_beans.empty:
-                struct_beans = struct_beans.head(top_k_beans * 2)
+                struct_beans = struct_beans.head(top_k_beans * 3)
 
         result_lists = [sem_beans]
         if product_match is not None and not product_match.empty:

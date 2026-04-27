@@ -7,6 +7,19 @@ queries like "Gợi ý cà phê tương tự X" match similar_search (not produc
 import re
 
 INTENT_PRIORITY = [
+    ("edge_case", [
+        r"^.{0,15}$",                                         # very short / vague
+        r"ignore.*(previous|instructions|above)|forget.*prompt",  # adversarial
+        r"book.*(flight|hotel|ticket)|giá cổ phiếu|stock price", # out-of-scope
+    ]),
+    ("exploration", [
+        r"(bao nhiêu|how many|tổng (số|cộng)|total)\b.*\b(hạt|bean|loại|quốc gia|countr|roaster|nhà rang|news|tin|chunk)",
+        r"\b(top|xếp hạng|ranking|hàng đầu)\b.*\d+|\d+.*\b(top|hàng đầu)\b",
+        r"which.*(countr|roaster|origin).*(most|produce|top)",
+        r"\b(distribution|phân bố|tỷ lệ)\b",
+        r"(phổ biến nhất|most (common|popular))",
+        r"\b(thống kê|statistic|overview|tổng quan)\b",
+    ]),
     ("similar_search", [
         r"tương tự|giống|similar\b|like\b",
         r"alternatives|thay thế|comparable",

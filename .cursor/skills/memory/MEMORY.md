@@ -4,6 +4,24 @@
 
 ---
 
+### 2026-04-27 — Regenerated RAG eval dataset grounded in real data
+
+- **Category:** progress
+- **Details:** Rewrote evaluation dataset from scratch. Old `ragas_eval_dataset.json` had ~60% ungrounded contexts (generic/fabricated product names). New `ragas_eval_dataset_v2.json` has 410 cases across 7 intents (product_search:100, similar_search:60, comparison:60, knowledge_qa:80, news_search:60, exploration:40, edge_case:10), 100% grounded in real data from `beans_clean.parquet` and `news_chunks.parquet`. Generated via async parallel gpt-4o-mini calls. Validation: 0 ungrounded contexts, 0 duplicate IDs, 2 duplicate questions (minor).
+- **Files:** `evaluation/generate_dataset.py` (new), `evaluation/validate_dataset.py` (new), `ragas_eval_dataset_v2.json` (new)
+
+### 2026-04-27 — Pipeline fixes: intent classifier, entity extractor, product matcher
+
+- **Category:** bugfix
+- **Details:** Fixed intent misclassification (reordered INTENT_PRIORITY), improved entity extraction for product/roaster names, added `src/retrieval/product_matcher.py` for fuzzy product name matching integrated into pipeline via RRF.
+- **Files:** `src/query/intent_classifier.py`, `src/query/entity_extractor.py`, `src/retrieval/product_matcher.py` (new), `src/pipeline.py`
+
+### 2026-04-27 — Embedding model made configurable via .env
+
+- **Category:** config
+- **Details:** `EMBEDDING_MODEL` env var controls which sentence-transformers model is used. Currently set to `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (dim=384). `BAAI/bge-m3` was tested on Linux GPU server but local Windows still uses MiniLM. Added resume logic to `build_embeddings.py`.
+- **Files:** `src/preprocessing/build_embeddings.py`, `src/retrieval/semantic_search.py`, `.env`, `.env.example`
+
 ### 2026-04-26 — Added Ragas evaluation harness
 
 - **Category:** progress

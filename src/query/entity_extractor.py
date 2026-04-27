@@ -49,13 +49,16 @@ JSON: {"flavor": null, "origin": null, "roast": null, "processing": null, "typol
 Query: {query}
 JSON:"""
 
-ROAST_KEYWORDS = {
-    "light": "Light", "nhạt": "Light", "sáng": "Light",
-    "medium-light": "Medium-Light", "medium light": "Medium-Light",
-    "medium": "Medium", "trung bình": "Medium", "vừa": "Medium",
-    "medium-dark": "Medium-Dark", "medium dark": "Medium-Dark",
-    "dark": "Dark", "đậm": "Dark", "tối": "Dark",
-}
+ROAST_KEYWORDS = [
+    ("vừa nhẹ", "Medium-Light"), ("vừa sáng", "Medium-Light"),
+    ("medium-light", "Medium-Light"), ("medium light", "Medium-Light"),
+    ("vừa đậm", "Medium-Dark"), ("vừa tối", "Medium-Dark"),
+    ("vừa đến đậm", "Medium-Dark"), ("trung bình đến đậm", "Medium-Dark"),
+    ("medium-dark", "Medium-Dark"), ("medium dark", "Medium-Dark"),
+    ("light", "Light"), ("nhạt", "Light"), ("sáng", "Light"), ("nhẹ", "Light"),
+    ("medium", "Medium"), ("trung bình", "Medium"), ("vừa", "Medium"),
+    ("dark", "Dark"), ("đậm", "Dark"), ("tối", "Dark"),
+]
 
 ORIGIN_KEYWORDS = [
     "vietnam", "việt nam", "ethiopia", "colombia", "brazil", "kenya",
@@ -119,7 +122,7 @@ def _rule_based_extract(query: str) -> dict:
     if flavors:
         entities["flavor"] = flavors
 
-    for kw, level in ROAST_KEYWORDS.items():
+    for kw, level in ROAST_KEYWORDS:
         if kw in q:
             entities["roast"] = level
             break

@@ -231,11 +231,25 @@ async def score_all_metrics(metrics: dict[str, Any], sample: dict[str, Any]) -> 
 
 # ── Per-sample processing ─────────────────────────────────────
 
+MAX_EVAL_CONTEXTS = 20
+
+
 def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     """Run retrieval + optional generation for a single case. Returns a sample dict."""
     question = case["question"]
     ctx = rag.retrieve(question, top_k_beans=args.top_k_beans, top_k_news=args.top_k_news)
-    retrieved_contexts = build_retrieved_contexts(ctx)
+
+    beans = ctx.get("beans")
+    news = ctx.get("news")
+    bean_count = len(beans) if beans is not None and not getattr(beans, "empty", True) else 0
+    news_count = len(news) if news is not None and not getattr(news, "empty", True) else 0
+
+    eval_ctx = dict(ctx)
+    if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
+        eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
+    if news is not None and len(news) > MAX_EVAL_CONTEXTS:
+        eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
+    retrieved_contexts = build_retrieved_contexts(eval_ctx)
 
     response = None
     if args.mode == "full":
@@ -249,8 +263,8 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         "retrieved_contexts": retrieved_contexts,
         "intent": ctx.get("intent", ""),
         "entities": ctx.get("entities", {}),
-        "bean_count": len(ctx.get("beans", [])) if ctx.get("beans") is not None else 0,
-        "news_count": len(ctx.get("news", [])) if ctx.get("news") is not None else 0,
+        "bean_count": bean_count,
+        "news_count": news_count,
     }
 
 

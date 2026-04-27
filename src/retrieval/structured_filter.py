@@ -12,22 +12,21 @@ def _as_str(value) -> str:
     return re.escape(str(value))
 
 
-def structured_filter(beans_df: pd.DataFrame, entities: dict) -> pd.DataFrame:
-    """Filter beans DataFrame using extracted entities.
+MIN_RESULTS = 3
 
-    entities example:
-        {"origin": "Vietnam", "roast": "Medium", "flavor": ["chocolate"],
-         "typology": "Arabica", "processing": "Washed"}
-    """
+
+def _apply_filters(beans_df: pd.DataFrame, entities: dict, skip: set[str] | None = None) -> pd.DataFrame:
+    """Apply entity filters with optional skip set for relaxation."""
+    skip = skip or set()
     mask = pd.Series(True, index=beans_df.index)
 
-    if entities.get("origin"):
+    if entities.get("origin") and "origin" not in skip:
         mask &= beans_df["country"].str.contains(_as_str(entities["origin"]), case=False, na=False)
 
-    if entities.get("roast"):
+    if entities.get("roast") and "roast" not in skip:
         mask &= beans_df["roast_level_clean"].str.contains(_as_str(entities["roast"]), case=False, na=False)
 
-    if entities.get("flavor"):
+    if entities.get("flavor") and "flavor" not in skip:
         flavors = entities["flavor"]
         if isinstance(flavors, str):
             flavors = [flavors]
@@ -35,12 +34,40 @@ def structured_filter(beans_df: pd.DataFrame, entities: dict) -> pd.DataFrame:
         for f in flavors:
             mask &= flat.str.contains(re.escape(f.lower()), na=False)
 
-    if entities.get("typology"):
+    if entities.get("typology") and "typology" not in skip:
         species_flat = beans_df["species"].apply(lambda x: " ".join(x).lower() if isinstance(x, list) else "")
         mask &= species_flat.str.contains(_as_str(entities["typology"]).lower(), na=False)
 
-    if entities.get("processing"):
+    if entities.get("processing") and "processing" not in skip:
         proc_flat = beans_df["processing_clean"].apply(lambda x: " ".join(x).lower() if isinstance(x, list) else "")
         mask &= proc_flat.str.contains(_as_str(entities["processing"]).lower(), na=False)
 
     return beans_df[mask]
+
+
+def structured_filter(beans_df: pd.DataFrame, entities: dict) -> pd.DataFrame:
+    """Filter beans DataFrame using extracted entities.
+
+    entities example:
+        {"origin": "Vietnam", "roast": "Medium", "flavor": ["chocolate"],
+         "typology": "Arabica", "processing": "Washed"}
+
+    If strict AND filtering returns fewer than MIN_RESULTS, progressively
+    relax by dropping the least important filter (processing → typology →
+    roast) until enough results are found.
+    """
+    result = _apply_filters(beans_df, entities)
+    if len(result) >= MIN_RESULTS:
+        return result
+
+    relaxation_order = ["processing", "typology", "roast"]
+    skipped: set[str] = set()
+    for field in relaxation_order:
+        if not entities.get(field):
+            continue
+        skipped.add(field)
+        result = _apply_filters(beans_df, entities, skip=skipped)
+        if len(result) >= MIN_RESULTS:
+            return result
+
+    return result
