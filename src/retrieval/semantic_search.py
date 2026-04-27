@@ -25,6 +25,7 @@ MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-mult
 class SemanticSearcher:
     def __init__(self, model_name: str = MODEL_NAME):
         self.model = SentenceTransformer(model_name)
+        self._emb_dir = EMB_DIR
 
         self.beans = pd.read_parquet(DATA_DIR / "beans_clean.parquet")
         self.news_chunks = pd.read_parquet(DATA_DIR / "news_chunks.parquet")

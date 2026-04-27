@@ -1,5 +1,7 @@
 """Full RAG pipeline: Query → Understand → Retrieve → Re-rank → Generate."""
 
+import numpy as np
+
 from src.query.intent_classifier import classify_intent
 from src.query.entity_extractor import extract_entities
 from src.retrieval.semantic_search import SemanticSearcher
@@ -15,6 +17,7 @@ class CoffeeRAG:
     def __init__(self):
         self.searcher = SemanticSearcher()
         self.llm_client = get_client()
+        self._bean_vecs = np.load(self.searcher._emb_dir / "beans_embeddings.npy")
 
     def retrieve(self, query: str, top_k_beans: int = 10, top_k_news: int = 5):
         intent = classify_intent(query)
@@ -55,7 +58,14 @@ class CoffeeRAG:
         if intent in ("product_search", "similar_search", "comparison") and has_filters:
             struct_beans = structured_filter(self.searcher.beans, entities)
             if not struct_beans.empty:
-                struct_beans = struct_beans.head(top_k_beans * 3)
+                struct_idx = struct_beans.index.tolist()
+                qvec = self.searcher._encode_query(query)
+                bean_vecs = self._bean_vecs[struct_idx]
+                sims = (bean_vecs @ qvec.T).flatten()
+                struct_beans = struct_beans.copy()
+                struct_beans["_sim"] = sims
+                struct_beans = struct_beans.sort_values("_sim", ascending=False).head(top_k_beans * 3)
+                struct_beans = struct_beans.drop(columns=["_sim"])
 
         result_lists = [sem_beans]
         if product_match is not None and not product_match.empty:

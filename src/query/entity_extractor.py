@@ -19,12 +19,15 @@ IMPORTANT RULES:
 - "product": Extract the EXACT product name if the user mentions a specific coffee by name.
   Do NOT split product names into other fields. For example, "MIDNIGHT CHOCOLATE" is a
   product name, not a flavor.
-- "roaster": Extract the roaster/brand name if mentioned (e.g. "Every Half", "Starbucks").
+- "roaster": ONLY extract a real roaster/brand name (e.g. "Every Half", "Starbucks").
+  A roaster is a company that roasts coffee. Country names, flavor descriptions, and
+  phrases like "from Colombia" are NEVER roasters. If no roaster is mentioned, use null.
 - "flavor": ONLY extract actual taste/aroma descriptors the user is looking for.
-  Always translate Vietnamese flavor terms to English (e.g. "dâu tây"→"Strawberry",
-  "sô cô la"→"Chocolate", "đào"→"Peach", "việt quất"→"Blueberry", "mật ong"→"Honey",
-  "hoa nhài"→"Jasmine", "cam"→"Orange", "chanh"→"Citrus Fruit", "táo"→"Apple",
-  "hoa"→"Floral", "trái cây"→"Fruity", "kem"→"Creamy", "ca cao"→"Cocoa").
+  Always translate to English (e.g. "dâu tây"→"Strawberry", "sô cô la"→"Chocolate",
+  "đào"→"Peach", "việt quất"→"Blueberry", "mật ong"→"Honey", "hoa nhài"→"Jasmine",
+  "cam"→"Orange", "chanh"→"Citrus Fruit", "táo"→"Apple", "hoa"→"Floral",
+  "trái cây"→"Fruity", "kem"→"Creamy", "ca cao"→"Cocoa", "đường nâu"→"Brown Sugar",
+  "caramel"→"Caramelized", "brown sugar"→"Brown Sugar").
   Do NOT include words from a product name.
 - "origin": country or region name (e.g. "Vietnam", "Ethiopia")
 - "roast": roast level (Light, Medium-Light, Medium, Medium-Dark, Dark)
@@ -40,8 +43,11 @@ JSON: {"flavor": null, "origin": null, "roast": null, "processing": null, "typol
 Query: "Tìm cà phê vị chocolate, medium roast, từ Việt Nam"
 JSON: {"flavor": ["Chocolate"], "origin": "Vietnam", "roast": "Medium", "processing": null, "typology": null, "roaster": null, "product": null}
 
-Query: "Gợi ý cà phê có hương dâu tây, rang nhạt, từ Guatemala"
-JSON: {"flavor": ["Strawberry"], "origin": "Guatemala", "roast": "Light", "processing": null, "typology": null, "roaster": null, "product": null}
+Query: "Can you help me find a light roast coffee from Colombia that has floral flavor notes?"
+JSON: {"flavor": ["Floral"], "origin": "Colombia", "roast": "Light", "processing": null, "typology": null, "roaster": null, "product": null}
+
+Query: "Can you recommend a medium roast coffee from Kenya that has brown sugar flavor notes?"
+JSON: {"flavor": ["Brown Sugar"], "origin": "Kenya", "roast": "Medium", "processing": null, "typology": null, "roaster": null, "product": null}
 
 Query: "Compare Ethiopia Yirgacheffe with Kenya AA"
 JSON: {"flavor": null, "origin": null, "roast": null, "processing": null, "typology": null, "roaster": null, "product": null}
@@ -50,10 +56,13 @@ Query: {query}
 JSON:"""
 
 ROAST_KEYWORDS = [
-    ("vừa nhẹ", "Medium-Light"), ("vừa sáng", "Medium-Light"),
+    ("vừa-nhẹ", "Medium-Light"), ("vừa nhẹ", "Medium-Light"),
+    ("vừa nhạt", "Medium-Light"), ("vừa sáng", "Medium-Light"),
     ("medium-light", "Medium-Light"), ("medium light", "Medium-Light"),
-    ("vừa đậm", "Medium-Dark"), ("vừa tối", "Medium-Dark"),
-    ("vừa đến đậm", "Medium-Dark"), ("trung bình đến đậm", "Medium-Dark"),
+    ("vừa đến tối", "Medium-Dark"), ("vừa đến đậm", "Medium-Dark"),
+    ("trung bình đến đậm", "Medium-Dark"),
+    ("vừa-dark", "Medium-Dark"), ("vừa đậm", "Medium-Dark"), ("vừa tối", "Medium-Dark"),
+    ("trung-cao", "Medium-Dark"), ("trung cao", "Medium-Dark"),
     ("medium-dark", "Medium-Dark"), ("medium dark", "Medium-Dark"),
     ("light", "Light"), ("nhạt", "Light"), ("sáng", "Light"), ("nhẹ", "Light"),
     ("medium", "Medium"), ("trung bình", "Medium"), ("vừa", "Medium"),
@@ -69,26 +78,34 @@ ORIGIN_KEYWORDS = [
 ]
 
 FLAVOR_KEYWORDS = [
+    "brown sugar", "stone fruit", "dark chocolate", "milk chocolate",
+    "black tea", "citrus fruit",
     "chocolate", "fruity", "floral", "nutty", "citrus", "berry",
-    "caramel", "honey", "spicy", "herbal", "tropical", "stone fruit",
+    "caramel", "honey", "spicy", "herbal", "tropical",
     "vanilla", "cocoa", "almond", "hazelnut", "peach", "apple",
     "cherry", "blueberry", "raspberry", "strawberry", "mango",
     "jasmine", "rose", "lavender", "tea", "wine", "whiskey",
-    "sô cô la", "hoa quả", "trái cây", "hoa", "hạt", "cam",
-    "mật ong", "chua", "đắng", "ngọt", "béo", "kem",
+    "plum", "grape", "orange", "lemon", "lime", "grapefruit",
+    "sô cô la đen", "sô cô la", "trái cây họ cam",
+    "hoa quả", "trái cây", "hoa", "hạt", "cam",
+    "mật ong", "chua", "đắng", "ngọt", "béo", "kem", "đường nâu",
+    "mâm xôi", "hương nhài",
 ]
 
 VI_FLAVOR_MAP = {
+    "quả mâm xôi": "Raspberry", "mâm xôi": "Raspberry",
     "dâu tây": "Strawberry", "dâu": "Strawberry", "việt quất": "Blueberry",
     "đào": "Peach", "mận": "Plum", "cherry": "Cherry", "anh đào": "Cherry",
     "táo": "Apple", "cam": "Orange", "chanh": "Citrus Fruit", "bưởi": "Grapefruit",
     "xoài": "Mango", "dừa": "Coconut", "chuối": "Banana",
+    "sô cô la đen": "Dark Chocolate", "socola đen": "Dark Chocolate",
     "sô cô la": "Chocolate", "socola": "Chocolate", "ca cao": "Cocoa",
+    "trái cây họ cam": "Citrus Fruit",
     "caramel": "Caramelized", "mật ong": "Honey", "vani": "Vanilla",
     "hạnh nhân": "Almond", "hạt phỉ": "Hazelnut", "hạt điều": "Cashew",
-    "hoa nhài": "Jasmine", "hoa hồng": "Rose", "hoa": "Floral",
+    "hương nhài": "Jasmine", "hoa nhài": "Jasmine", "hoa hồng": "Rose", "hoa": "Floral",
     "trái cây": "Fruity", "hoa quả": "Fruity", "nhiệt đới": "Tropical",
-    "trà": "Black Tea", "trà đen": "Black Tea", "rượu vang": "Wine",
+    "trà đen": "Black Tea", "trà": "Black Tea", "rượu vang": "Wine",
     "kem": "Creamy", "béo": "Creamy", "bơ": "Butterscotch",
     "đường nâu": "Brown Sugar", "mía": "Brown Sugar",
     "cay": "Spicy", "thảo mộc": "Herbal",
@@ -116,9 +133,13 @@ def _rule_based_extract(query: str) -> dict:
 
     product_lower = (entities["product"] or "").lower()
     flavors = [f for f in FLAVOR_KEYWORDS if f in q and f not in product_lower]
+    vi_mapped: set[str] = set()
     for vi_kw, en_flavor in VI_FLAVOR_MAP.items():
-        if vi_kw in q and en_flavor not in flavors:
-            flavors.append(en_flavor)
+        if vi_kw in q:
+            vi_mapped.add(vi_kw)
+            if en_flavor not in flavors:
+                flavors.append(en_flavor)
+    flavors = [f for f in flavors if f not in vi_mapped]
     if flavors:
         entities["flavor"] = flavors
 
@@ -145,6 +166,20 @@ def _rule_based_extract(query: str) -> dict:
     return entities
 
 
+def _clean_flavors(flavors: list[str] | None) -> list[str] | None:
+    """Deduplicate flavors: map Vietnamese to English, remove duplicates."""
+    if not flavors:
+        return flavors
+    cleaned: list[str] = []
+    seen_lower: set[str] = set()
+    for f in flavors:
+        mapped = VI_FLAVOR_MAP.get(f.lower(), f)
+        if mapped.lower() not in seen_lower:
+            seen_lower.add(mapped.lower())
+            cleaned.append(mapped)
+    return cleaned or None
+
+
 def extract_entities(query: str, client: OpenAI | None = None) -> dict:
     """Try LLM extraction first, fall back to rules."""
     if client:
@@ -161,6 +196,7 @@ def extract_entities(query: str, client: OpenAI | None = None) -> dict:
                 expected_keys = {"flavor", "origin", "roast", "processing", "typology", "roaster", "product"}
                 for key in expected_keys:
                     result.setdefault(key, None)
+                result["flavor"] = _clean_flavors(result.get("flavor"))
                 return result
         except Exception:
             pass
