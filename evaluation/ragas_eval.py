@@ -131,7 +131,20 @@ def response_to_text(response: CoffeeResponse | None) -> str:
     return str(response)
 
 
-def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, language: str | None) -> list[dict[str, Any]]:
+def load_existing_ids(csv_path: Path) -> set[str]:
+    """Return the set of case IDs already present in the results CSV."""
+    if not csv_path.exists():
+        return set()
+    try:
+        with csv_path.open(encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            return {row["id"] for row in reader if row.get("id")}
+    except Exception:
+        return set()
+
+
+def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, language: str | None,
+               skip_ids: set[str] | None = None) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8") as f:
         cases = json.load(f)
 
@@ -139,6 +152,12 @@ def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, l
         cases = [case for case in cases if case.get("intent") == intent]
     if language:
         cases = [case for case in cases if case.get("language") == language]
+    if skip_ids:
+        before = len(cases)
+        cases = [case for case in cases if case.get("id", "") not in skip_ids]
+        skipped = before - len(cases)
+        if skipped:
+            print(f"Skipping {skipped} already-evaluated cases (found in results CSV).")
     if offset:
         cases = cases[offset:]
     if limit is not None and limit > 0:
@@ -308,7 +327,8 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.mode == "retrieval":
         metric_names = [name for name in metric_names if name in {"context_precision", "context_recall"}]
 
-    cases = load_cases(args.dataset, args.limit, args.offset, args.intent, args.language)
+    skip_ids = load_existing_ids(args.out) if args.limit == 0 else None
+    cases = load_cases(args.dataset, args.limit, args.offset, args.intent, args.language, skip_ids=skip_ids)
     if not cases:
         print("No cases matched filters.")
         return []
@@ -369,20 +389,39 @@ def run_eval(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 # ── Output ────────────────────────────────────────────────────
 
-def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
+def load_existing_rows(csv_path: Path) -> list[dict[str, Any]]:
+    """Load all rows from an existing results CSV."""
+    if not csv_path.exists():
+        return []
+    try:
+        with csv_path.open(encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if merge_existing:
+        existing = load_existing_rows(path)
+        new_ids = {row["id"] for row in rows if row.get("id")}
+        merged = [row for row in existing if row.get("id") not in new_ids] + rows
+    else:
+        merged = rows
+
     preferred = ["id", "intent", "difficulty", "language", "question", "retrieved_context_count",
                  "bean_count", "news_count", "elapsed_s"]
     metric_cols = ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]
     tail = ["response", "reference", "error"]
     used = set(preferred + metric_cols + tail)
-    extra = sorted(k for row in rows for k in row if k not in used)
-    fieldnames = [c for c in preferred + metric_cols + extra + tail if any(c in row for row in rows)]
+    extra = sorted(k for row in merged for k in row if k not in used)
+    fieldnames = [c for c in preferred + metric_cols + extra + tail if any(c in row for row in merged)]
 
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(merged)
 
 
 def print_summary(rows: list[dict[str, Any]]) -> None:
@@ -449,11 +488,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    resuming = args.limit == 0
     rows = run_eval(args)
     if rows:
-        write_csv(rows, args.out)
-        print_summary(rows)
-        print(f"\nWrote {args.out}")
+        write_csv(rows, args.out, merge_existing=resuming)
+        all_rows = load_existing_rows(args.out) if resuming else rows
+        print_summary(all_rows)
+        print(f"\nWrote {args.out} ({len(all_rows)} total rows)")
 
 
 if __name__ == "__main__":
