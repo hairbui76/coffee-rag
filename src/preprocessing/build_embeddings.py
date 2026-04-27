@@ -1,18 +1,22 @@
 """Embed cleaned data and build FAISS indices."""
 
+import os
 from pathlib import Path
 
 import faiss
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
+
 BEANS_PATH = ROOT / "data" / "processed" / "beans_clean.parquet"
 CHUNKS_PATH = ROOT / "data" / "processed" / "news_chunks.parquet"
 EMB_DIR = ROOT / "data" / "embeddings"
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 BATCH_SIZE = 256
 
 

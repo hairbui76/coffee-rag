@@ -1,21 +1,25 @@
 """Module 2B: Semantic search using FAISS + sentence-transformers."""
 
 import logging
+import os
 from pathlib import Path
 
 import faiss
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
+
 EMB_DIR = ROOT / "data" / "embeddings"
 DATA_DIR = ROOT / "data" / "processed"
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
 class SemanticSearcher:

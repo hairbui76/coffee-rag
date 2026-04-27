@@ -4,6 +4,7 @@ from src.query.intent_classifier import classify_intent
 from src.query.entity_extractor import extract_entities
 from src.retrieval.semantic_search import SemanticSearcher
 from src.retrieval.structured_filter import structured_filter
+from src.retrieval.product_matcher import match_by_product_name
 from src.retrieval.reranker import reciprocal_rank_fusion
 from src.generation.prompt_templates import build_prompt
 from src.generation.llm_client import get_client, generate_structured
@@ -19,8 +20,17 @@ class CoffeeRAG:
         intent = classify_intent(query)
         entities = extract_entities(query, client=self.llm_client)
 
+        product_name = entities.get("product")
+        roaster_name = entities.get("roaster")
+
         sem_beans = self.searcher.search_beans(query, top_k=top_k_beans * 2)
         sem_news = self.searcher.search_news(query, top_k=top_k_news)
+
+        product_match = None
+        if product_name:
+            product_match = match_by_product_name(
+                self.searcher.beans, product_name, roaster_name
+            )
 
         struct_beans = None
         has_filters = any(entities.get(k) for k in ("origin", "roast", "flavor", "typology", "processing"))
@@ -29,8 +39,14 @@ class CoffeeRAG:
             if not struct_beans.empty:
                 struct_beans = struct_beans.head(top_k_beans * 2)
 
+        result_lists = [sem_beans]
+        if product_match is not None and not product_match.empty:
+            result_lists.insert(0, product_match)
         if struct_beans is not None and not struct_beans.empty:
-            beans = reciprocal_rank_fusion(sem_beans, struct_beans, top_k=top_k_beans)
+            result_lists.append(struct_beans)
+
+        if len(result_lists) > 1:
+            beans = reciprocal_rank_fusion(*result_lists, top_k=top_k_beans)
         else:
             beans = sem_beans.head(top_k_beans)
 
