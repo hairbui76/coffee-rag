@@ -17,7 +17,7 @@ CHUNKS_PATH = ROOT / "data" / "processed" / "news_chunks.parquet"
 EMB_DIR = ROOT / "data" / "embeddings"
 
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-BATCH_SIZE = 256
+BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 
 
 def build_all(model_name: str = MODEL_NAME):
