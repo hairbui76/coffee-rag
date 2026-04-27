@@ -42,7 +42,7 @@ def build_all(model_name: str = MODEL_NAME, force: bool = False):
 
     print(f"Loading model: {model_name}")
     model = SentenceTransformer(model_name)
-    expected_dim = model.get_sentence_embedding_dimension()
+    expected_dim = model.get_embedding_dimension()
 
     def _needs_rebuild(npy_path, idx_path):
         if force:

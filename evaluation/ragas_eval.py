@@ -459,7 +459,7 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
     if errors:
         print(f"\n  errors: {len(errors)} rows (see CSV error column)")
 
-    elapsed_vals = [row["elapsed_s"] for row in rows if "elapsed_s" in row]
+    elapsed_vals = [float(row["elapsed_s"]) for row in rows if row.get("elapsed_s") not in ("", None)]
     if elapsed_vals:
         print(f"\n  timing: avg={sum(elapsed_vals)/len(elapsed_vals):.1f}s  "
               f"min={min(elapsed_vals):.1f}s  max={max(elapsed_vals):.1f}s")
