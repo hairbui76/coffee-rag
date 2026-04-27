@@ -140,25 +140,65 @@ def plot_by_language(df: pd.DataFrame, metrics: list[str], out: Path):
 
 # ── 6. Precision vs Recall scatter ───────────────────────────
 
-def plot_precision_recall(df: pd.DataFrame, out: Path):
+def plot_precision_recall(df: pd.DataFrame, out: Path) -> int:
+    """One scatter plot per intent. Returns number of charts generated."""
     if "context_precision" not in df.columns or "context_recall" not in df.columns:
-        return
+        return 0
     sub = df[["context_precision", "context_recall", "intent"]].dropna()
     if sub.empty:
-        return
-    fig, ax = plt.subplots(figsize=(7, 6))
-    sns.scatterplot(data=sub, x="context_precision", y="context_recall", hue="intent",
-                    s=80, alpha=0.7, ax=ax, edgecolor="white", linewidth=0.5)
-    ax.set_xlim(-0.05, 1.05)
-    ax.set_ylim(-0.05, 1.05)
-    ax.plot([0, 1], [0, 1], ls="--", color="gray", alpha=0.5, lw=1)
-    ax.set_xlabel("Context Precision")
-    ax.set_ylabel("Context Recall")
-    ax.set_title("Context Precision vs Recall", fontweight="bold")
-    ax.legend(title="intent", fontsize=8, loc="lower right")
+        return 0
+
+    intents = sorted(sub["intent"].unique())
+    colors = sns.color_palette("husl", len(intents))
+    intent_color = dict(zip(intents, colors))
+
+    for intent in intents:
+        idf = sub[sub["intent"] == intent]
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.scatter(idf["context_precision"], idf["context_recall"],
+                   s=80, alpha=0.7, color=intent_color[intent], edgecolor="white", linewidth=0.5)
+        ax.plot([0, 1], [0, 1], ls="--", color="gray", alpha=0.5, lw=1)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlabel("Context Precision")
+        ax.set_ylabel("Context Recall")
+        mean_p = idf["context_precision"].mean()
+        mean_r = idf["context_recall"].mean()
+        ax.set_title(f"Precision vs Recall — {intent}\n"
+                     f"(n={len(idf)}, mean P={mean_p:.2f}, R={mean_r:.2f})",
+                     fontweight="bold", fontsize=11)
+        fig.tight_layout()
+        fig.savefig(out / f"6_precision_recall_{intent}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    # Also save a combined overview grid
+    ncols = min(3, len(intents))
+    nrows = (len(intents) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False)
+    for idx, intent in enumerate(intents):
+        r, c = divmod(idx, ncols)
+        ax = axes[r][c]
+        idf = sub[sub["intent"] == intent]
+        ax.scatter(idf["context_precision"], idf["context_recall"],
+                   s=60, alpha=0.7, color=intent_color[intent], edgecolor="white", linewidth=0.5)
+        ax.plot([0, 1], [0, 1], ls="--", color="gray", alpha=0.4, lw=1)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlabel("Precision", fontsize=9)
+        ax.set_ylabel("Recall", fontsize=9)
+        mean_p = idf["context_precision"].mean()
+        mean_r = idf["context_recall"].mean()
+        ax.set_title(f"{intent} (n={len(idf)})\nP={mean_p:.2f}  R={mean_r:.2f}",
+                     fontweight="bold", fontsize=10)
+    for idx in range(len(intents), nrows * ncols):
+        r, c = divmod(idx, ncols)
+        axes[r][c].set_visible(False)
+    fig.suptitle("Context Precision vs Recall by Intent", fontweight="bold", fontsize=13)
     fig.tight_layout()
-    fig.savefig(out / "6_precision_recall.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "6_precision_recall_all.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+    return len(intents)
 
 
 # ── 7. Failure analysis ──────────────────────────────────────
@@ -350,8 +390,11 @@ def main():
     plot_by_language(df, metrics, out)
     print("  [5/9] by language")
 
-    plot_precision_recall(df, out)
-    print("  [6/9] precision vs recall")
+    n_pr = plot_precision_recall(df, out)
+    if n_pr:
+        print(f"  [6/9] precision vs recall ({n_pr} intent charts + 1 overview)")
+    else:
+        print("  [6/9] precision vs recall (skipped)")
 
     plot_failure_rate(df, metrics, out)
     print("  [7/9] failure rate")

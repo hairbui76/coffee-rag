@@ -414,6 +414,33 @@ def load_existing_rows(csv_path: Path) -> list[dict[str, Any]]:
         return []
 
 
+def write_responses(rows: list[dict[str, Any]], path: Path) -> None:
+    """Save a JSON file with question-response pairs for each evaluated case."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for row in rows:
+        response_raw = row.get("response", "")
+        try:
+            response_parsed = json.loads(response_raw) if response_raw else None
+        except (json.JSONDecodeError, TypeError):
+            response_parsed = response_raw or None
+
+        entries.append({
+            "id": row.get("id", ""),
+            "intent": row.get("intent", ""),
+            "difficulty": row.get("difficulty", ""),
+            "language": row.get("language", ""),
+            "question": row.get("question", ""),
+            "response": response_parsed,
+            "reference": row.get("reference", ""),
+            "bean_count": row.get("bean_count", 0),
+            "news_count": row.get("news_count", 0),
+        })
+
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
 def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -494,6 +521,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k-beans", type=int, default=10)
     parser.add_argument("--top-k-news", type=int, default=5)
     parser.add_argument("--workers", type=int, default=4, help="Max concurrent samples scored in parallel.")
+    parser.add_argument("--responses-out", type=Path, default=None,
+                        help="Output JSON file for question-response pairs. Defaults to <out>_responses.json.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show entities, context counts, running averages per sample.")
     parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL", "gpt-4o-mini"))
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"))
@@ -502,13 +531,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.responses_out is None:
+        args.responses_out = args.out.with_name(args.out.stem + "_responses.json")
     resuming = args.limit == 0
     rows = run_eval(args)
     if rows:
         write_csv(rows, args.out, merge_existing=resuming)
         all_rows = load_existing_rows(args.out) if resuming else rows
+        write_responses(all_rows, args.responses_out)
         print_summary(all_rows)
         print(f"\nWrote {args.out} ({len(all_rows)} total rows)")
+        print(f"Wrote {args.responses_out} ({len(all_rows)} responses)")
 
 
 if __name__ == "__main__":
