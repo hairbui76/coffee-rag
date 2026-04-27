@@ -355,13 +355,27 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = [None] * total  # type: ignore[list-item]
     t_start = time.perf_counter()
 
+    ZERO_PRECISION_STOP_RATIO = 0.2
+    stop_event = asyncio.Event()
+    completed_count = 0
+    zero_precision_count = 0
+
     print(f"\n{'=' * 60}")
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     print(f"  cases={total}  workers={args.workers}  evaluator={args.evaluator_model}")
+    print(f"  early stop: context_precision=0 >= {ZERO_PRECISION_STOP_RATIO:.0%} of cases")
     print(f"{'=' * 60}\n")
 
     async def process_one(index: int, case: dict[str, Any]):
+        nonlocal completed_count, zero_precision_count
+
+        if stop_event.is_set():
+            return
+
         async with semaphore:
+            if stop_event.is_set():
+                return
+
             t0 = time.perf_counter()
 
             sample = await asyncio.to_thread(retrieve_one, rag, case, args)
@@ -389,12 +403,29 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
             log_sample(index + 1, total, case, sample, scores, elapsed, args.verbose, stats)
 
+            completed_count += 1
+            cp = scores.get("context_precision")
+            if cp is not None and cp != "" and float(cp) == 0.0:
+                zero_precision_count += 1
+            if completed_count >= 3 and zero_precision_count / completed_count >= ZERO_PRECISION_STOP_RATIO:
+                print(f"\n{'!' * 60}")
+                print(f"  EARLY STOP: {zero_precision_count}/{completed_count} cases "
+                      f"({zero_precision_count/completed_count:.0%}) have context_precision=0")
+                print(f"  Threshold: {ZERO_PRECISION_STOP_RATIO:.0%} — stopping evaluation.")
+                print(f"{'!' * 60}\n")
+                stop_event.set()
+
     await asyncio.gather(*[process_one(i, c) for i, c in enumerate(cases)])
 
     total_time = time.perf_counter() - t_start
-    print(f"\nTotal time: {total_time:.1f}s  ({total_time / max(total, 1):.1f}s/case avg)")
+    completed = [r for r in rows if r is not None]
+    if stop_event.is_set():
+        print(f"\nStopped early after {len(completed)}/{total} cases. "
+              f"Total time: {total_time:.1f}s")
+    else:
+        print(f"\nTotal time: {total_time:.1f}s  ({total_time / max(total, 1):.1f}s/case avg)")
 
-    return [r for r in rows if r is not None]
+    return completed
 
 
 def run_eval(args: argparse.Namespace) -> list[dict[str, Any]]:

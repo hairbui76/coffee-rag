@@ -165,33 +165,47 @@ OUTPUT: {
 
 **Mục đích:** Phân tích câu hỏi người dùng để xác định ý định và trích xuất thực thể.
 
-**Intent Classification** — Phân loại ý định bằng rule-based hoặc zero-shot LLM:
+**Intent Classification** — Phân loại ý định bằng rule-based regex, ưu tiên từ trên xuống (match đầu tiên thắng):
 
-| Intent               | Trigger keywords / patterns                        |
-| -------------------- | -------------------------------------------------- |
-| `product_search`     | "tìm", "gợi ý", "recommend", "cà phê có vị..."   |
-| `similar_search`     | "giống", "tương tự", "similar to", tên sản phẩm   |
-| `comparison`         | "so sánh", "khác gì", "vs", "compare"             |
-| `knowledge_qa`       | "là gì", "what is", "how", "tại sao"              |
-| `news_search`        | "tin tức", "news", "thị trường", "market"          |
+| Thứ tự | Intent               | Trigger keywords / patterns                                          |
+| ------ | -------------------- | -------------------------------------------------------------------- |
+| 1      | `edge_case`          | Query rất ngắn (<15 ký tự), adversarial, out-of-scope               |
+| 2      | `exploration`        | "bao nhiêu", "top N", "thống kê", "phổ biến nhất"                  |
+| 3      | `similar_search`     | "giống", "tương tự", "similar", "alternatives"                      |
+| 4      | `comparison`         | "so sánh", "compare", "khác gì/nhau/biệt", "differ", "vs"          |
+| 5      | `news_search`        | "tin tức", "news", "thị trường", "market", "xu hướng"               |
+| 6      | `product_search`     | "tìm", "gợi ý", "recommend", "find", "giới thiệu", "cà phê có vị" |
+| 7      | `knowledge_qa`       | "là gì", "what is", "how", "tại sao", "phương pháp", "method"      |
+
+> **Lưu ý:** `product_search` được đặt **trước** `knowledge_qa` để các query phức hợp
+> (vừa tìm sản phẩm vừa hỏi phương pháp) được phân loại đúng là product_search.
 
 **Entity Extraction** — Trích xuất các thuộc tính từ query:
 
 ```python
 entities = {
-    "flavor":     ["chocolate", "fruity"],    # từ flavor_notes vocab
-    "origin":     ["Vietnam"],                # từ country/origin vocab
+    "flavor":     ["Chocolate", "Fruity"],    # title-cased, từ flavor_notes vocab
+    "origin":     "Vietnam",                  # từ country/origin vocab
+    "country":    "Vietnam",                  # alias của origin (cho eval compatibility)
     "roast":      "Medium",                   # từ roast_level vocab
-    "processing": None,                       # từ processing vocab
+    "processing": "Washed",                   # từ processing vocab (EN + VI)
     "typology":   "Arabica",                  # từ typology vocab
-    "roaster":    None,                       # từ roaster_name vocab
+    "roaster":    None,                       # chỉ tên roaster thật (đã validate)
     "product":    None                        # tên sản phẩm cụ thể
 }
 ```
 
-**Cách triển khai:**
-- **Phương án A (đơn giản):** Rule-based + keyword matching với vocab trích từ data
-- **Phương án B (nâng cao):** Dùng LLM (Gemma/Qwen) extract entities qua structured prompt
+**Cách triển khai: LLM-first + rule-based fallback**
+- **Bước 1 (LLM):** Gửi structured prompt tới Gemma 4 E4B (qua Ollama), yêu cầu trả JSON.
+  Prompt bao gồm ví dụ EN + VI, hướng dẫn dịch flavor VI→EN, processing VI→EN.
+- **Bước 2 (Fallback):** Nếu LLM fail, dùng rule-based regex + keyword matching.
+
+**Post-processing sau extraction:**
+- **Flavor title-casing:** `"brown sugar"` → `"Brown Sugar"` để khớp data format
+- **Non-flavor filtering:** Loại bỏ `"hạt"`, `"bean"` — không phải flavor
+- **Roaster validation:** Reject query fragments (chứa country name, "that has", "flavor notes"...)
+- **Vietnamese processing map:** `"chế biến ướt"` → `"Washed"`, `"tự nhiên"` → `"Natural"`, `"kỵ khí"` → `"Anaerobic"`
+- **Country alias:** `entities["country"] = entities["origin"]`
 
 #### Module 2A: Structured Filter
 
@@ -202,20 +216,34 @@ def structured_filter(beans_df, entities):
     mask = pd.Series(True, index=beans_df.index)
 
     if entities.get("origin"):
-        mask &= beans_df["country"].str.contains(entities["origin"], case=False)
+        # Check cả country + origin column (để bắt 3760 beans có country rỗng)
+        origin_pat = re.escape(entities["origin"])
+        mask &= (
+            beans_df["country"].str.contains(origin_pat, case=False, na=False) |
+            beans_df["origin"].str.contains(origin_pat, case=False, na=False)
+        )
 
     if entities.get("roast"):
-        mask &= beans_df["roast_level_clean"] == entities["roast"]
+        mask &= beans_df["roast_level_clean"].str.contains(entities["roast"], case=False, na=False)
 
     if entities.get("flavor"):
+        flat = beans_df["flavor_notes_clean"].apply(lambda x: " ".join(x).lower())
         for f in entities["flavor"]:
-            mask &= beans_df["flavor_notes_flat"].str.contains(f, case=False)
+            mask &= flat.str.contains(re.escape(f.lower()), na=False)
 
     if entities.get("typology"):
-        mask &= beans_df["species"] == entities["typology"]
+        species_flat = beans_df["species"].apply(lambda x: " ".join(x).lower())
+        mask &= species_flat.str.contains(entities["typology"].lower(), na=False)
+
+    if entities.get("processing"):
+        proc_flat = beans_df["processing_clean"].apply(lambda x: " ".join(x).lower())
+        mask &= proc_flat.str.contains(entities["processing"].lower(), na=False)
 
     return beans_df[mask]
 ```
+
+**Progressive relaxation:** Nếu strict AND filter trả < 3 kết quả, lần lượt bỏ bớt filter
+theo thứ tự `processing → typology → roast` cho đến khi đủ kết quả.
 
 #### Module 2B: Semantic Retrieval
 
@@ -237,9 +265,7 @@ def structured_filter(beans_df, entities):
 
 3. Embed tất cả documents bằng sentence-transformer:
    ```
-   Model gợi ý: BAAI/bge-small-en-v1.5 (dim=384, fast, multilingual ok)
-   Backup:       all-MiniLM-L6-v2 (dim=384, rất nhẹ)
-   Nâng cao:     BAAI/bge-m3 (dim=1024, multilingual tốt nhất)
+   Model hiện tại: paraphrase-multilingual-MiniLM-L12-v2 (dim=384, multilingual)
    ```
 
 4. Lưu vectors vào **FAISS** (IndexFlatIP hoặc IndexIVFFlat) hoặc **ChromaDB**.
@@ -256,7 +282,18 @@ top_k_news  = faiss_news.search(query_vec, k=5)
 
 **Mục đích:** Kết hợp kết quả từ structured filter và semantic search, re-rank.
 
-**Phương án Reciprocal Rank Fusion (RRF):**
+**Pipeline thực tế:**
+
+1. **Product name matching** (nếu query chứa tên sản phẩm cụ thể):
+   - Exact substring match trước, fuzzy match (SequenceMatcher ≥ 0.6) sau
+   - Kết hợp roaster name với weight 0.7×product + 0.3×roaster
+
+2. **Semantic search** (FAISS): top-K×3 beans + top-K news
+
+3. **Structured filter**: lọc toàn bộ beans_df theo entities, sau đó
+   **re-rank bằng semantic similarity** với query để chọn top-K×3 từ kết quả filter
+
+4. **RRF fusion**: kết hợp các danh sách trên
 
 ```python
 def rrf_score(rank, k=60):
@@ -266,70 +303,35 @@ def rrf_score(rank, k=60):
 # score(d) = Σ rrf_score(rank_of_d_in_list_i)  for all lists i
 ```
 
-**Phương án Weighted Hybrid (đơn giản hơn):**
-
-```python
-hybrid_score = alpha * structured_match_score + beta * semantic_similarity
-# alpha, beta tunable (mặc định alpha=0.3, beta=0.7)
-```
-
-**Phương án Cross-Encoder Re-rank (nâng cao, optional):**
-
-```python
-# Lấy top-50 từ bi-encoder, re-rank bằng cross-encoder
-from sentence_transformers import CrossEncoder
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-scores = reranker.predict([(query, doc) for doc in top_50_docs])
-# Sắp xếp theo scores, lấy top-K
-```
+**Structured filter được chạy cho các intent:** `product_search`, `similar_search`,
+`comparison`, `knowledge_qa` (khi có entity filters).
 
 #### Module 4: Response Generation
 
-**Mục đích:** Tổng hợp retrieved context thành câu trả lời tự nhiên.
+**Mục đích:** Tổng hợp retrieved context thành câu trả lời có cấu trúc (Pydantic structured output).
 
-**Prompt template:**
+**Response schema (Pydantic):**
 
-```
-SYSTEM:
-Bạn là Coffee Advisor, chuyên gia tư vấn cà phê specialty.
-Trả lời dựa HOÀN TOÀN vào thông tin được cung cấp bên dưới.
-Nếu không có đủ thông tin, hãy nói rõ.
-Trả lời bằng ngôn ngữ phù hợp với câu hỏi (Tiếng Việt hoặc English).
+```python
+class CoffeeResponse(BaseModel):
+    summary: str          # Câu trả lời chính (2-4 câu)
+    products: list[RecommendedProduct]  # Sản phẩm gợi ý + lý do
+    articles: list[RelatedArticle]      # Bài báo liên quan
 
-RETRIEVED CONTEXT:
---- Bean 1 ---
-Name: {product_name}
-Roaster: {roaster_name}
-Origin: {origin}
-Flavor: {flavor_notes}
-Roast: {roast_level}
-Processing: {processing}
-Description: {about_description}
-Buy: {buy_links}
---- Bean 2 ---
-...
---- Related Article ---
-Title: {title}
-Summary: {summary}
-...
-
-USER QUERY:
-{user_query}
-
-Respond with:
-1. Tóm tắt tư vấn (2-3 câu)
-2. Danh sách sản phẩm gợi ý (kèm lý do cho mỗi sản phẩm)
-3. Bài báo liên quan (nếu có)
+class RecommendedProduct(BaseModel):
+    name: str             # Tên sản phẩm
+    roaster: str          # Tên roaster
+    reason: str           # Lý do gợi ý
+    url: str              # Product URL
 ```
 
-**LLM options:**
+**Bilingual system prompts:** Tự động phát hiện ngôn ngữ (Vietnamese diacritics)
+và chọn prompt tương ứng:
+- **VI:** `"Bạn là Coffee Advisor... Trả lời HOÀN TOÀN bằng TIẾ̀NG VIỆT..."`
+- **EN:** `"You are Coffee Advisor... You MUST respond ENTIRELY in ENGLISH..."`
 
-| Model                     | Ưu điểm                      | Nhược điểm          |
-| ------------------------- | ----------------------------- | -------------------- |
-| OpenAI GPT-4o-mini        | Chất lượng cao, dễ gọi API   | Tốn phí, cần API key |
-| Google Gemma 2 9B (local) | Miễn phí, chạy local         | Cần GPU >=16GB       |
-| Qwen2.5 7B (local)       | Hỗ trợ tiếng Việt tốt        | Cần GPU >=16GB       |
-| Groq API (Llama 3.1 8B)  | Miễn phí tier, rất nhanh     | Rate limit           |
+**LLM:** Gemma 4 E4B (qua Ollama, OpenAI-compatible API).
+Hỗ trợ cả Ollama (local) và OpenAI API (cloud) qua biến môi trường `LLM_PROVIDER`.
 
 ---
 
@@ -418,6 +420,7 @@ coffee-rag/
 ├── AGENTS.md                    # Mô tả hệ thống RAG (file này)
 ├── coffee_beans.json            # Dữ liệu beans gốc (14,537 sản phẩm)
 ├── coffee_news.json             # Dữ liệu news gốc (1,947 bài báo)
+├── ragas_eval_dataset_v2.json   # Dataset đánh giá (RAGAS format)
 ├── requirements.txt
 │
 ├── data/
@@ -437,16 +440,24 @@ coffee-rag/
 │   │   ├── clean_news.py        # Cleaning + chunking cho news
 │   │   └── build_embeddings.py  # Tạo embeddings + FAISS index
 │   ├── retrieval/
-│   │   ├── semantic_search.py   # Module 2B: Vector search
+│   │   ├── semantic_search.py   # Module 2B: FAISS vector search
 │   │   ├── structured_filter.py # Module 2A: Filter theo metadata
+│   │   ├── product_matcher.py   # Exact + fuzzy product name matching
 │   │   └── reranker.py          # Module 3: RRF fusion
 │   ├── generation/
-│   │   ├── prompt_templates.py  # Prompt templates cho các intent
-│   │   └── llm_client.py        # Gemma 4 E4B via Ollama
+│   │   ├── prompt_templates.py  # Bilingual prompt templates
+│   │   ├── schemas.py           # Pydantic response schemas
+│   │   └── llm_client.py        # Gemma 4 E4B via Ollama / OpenAI
 │   ├── query/
-│   │   ├── intent_classifier.py # Module 1A: Intent classification
-│   │   └── entity_extractor.py  # Module 1B: Entity extraction
-│   └── pipeline.py              # Orchestrate M1->M4
+│   │   ├── intent_classifier.py # Module 1A: Rule-based intent
+│   │   └── entity_extractor.py  # Module 1B: LLM + rule-based entities
+│   └── pipeline.py              # Orchestrate M1→M4
+│
+├── evaluation/
+│   ├── ragas_eval_debug.py      # Debug script cho retrieval
+│   ├── ragas_eval.py            # RAGAS evaluation runner
+│   ├── generate_dataset.py      # Tạo eval dataset
+│   └── results/                 # CSV kết quả đánh giá
 │
 ├── app/
 │   └── streamlit_app.py         # UI chatbot (Streamlit)
@@ -464,6 +475,7 @@ python>=3.10
 pandas>=2.0
 numpy>=1.24
 pyarrow>=14.0
+pydantic>=2.0                   # Structured LLM output schemas
 
 # Embedding & Vector Search
 sentence-transformers>=2.7      # model: paraphrase-multilingual-MiniLM-L12-v2
@@ -474,6 +486,7 @@ langchain-text-splitters>=0.2   # RecursiveCharacterTextSplitter
 
 # LLM (Gemma 4 E4B via Ollama)
 openai>=1.0                     # OpenAI-compatible client for Ollama
+python-dotenv>=1.0              # .env config loading
 
 # UI
 streamlit>=1.30
