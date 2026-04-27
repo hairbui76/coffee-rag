@@ -55,7 +55,7 @@ class CoffeeRAG:
 
         struct_beans = None
         has_filters = any(entities.get(k) for k in ("origin", "roast", "flavor", "typology", "processing"))
-        if intent in ("product_search", "similar_search", "comparison") and has_filters:
+        if intent in ("product_search", "similar_search", "comparison", "knowledge_qa") and has_filters:
             struct_beans = structured_filter(self.searcher.beans, entities)
             if not struct_beans.empty:
                 struct_idx = struct_beans.index.tolist()

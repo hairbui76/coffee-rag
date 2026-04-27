@@ -25,19 +25,19 @@ INTENT_PRIORITY = [
         r"alternatives|thay thế|comparable",
     ]),
     ("comparison", [
-        r"so sánh|compare|khác (gì|nhau)|differ|vs\b|versus",
+        r"so sánh|compare|khác (gì|nhau|biệt)|differ|vs\b|versus",
     ]),
     ("news_search", [
         r"tin tức|news|thị trường|market|trend|xu hướng|latest|mới nhất",
     ]),
+    ("product_search", [
+        r"tìm|gợi ý|recommend|suggest|cho tôi|give me|looking for|find|giới thiệu",
+        r"cà phê có vị|coffee with|cà phê.*rang|want.*coffee",
+        r"pha (filter|espresso|pour.?over|drip)",
+    ]),
     ("knowledge_qa", [
         r"là gì|what is|how (does|do|to)|tại sao|why|explain|giải thích",
         r"phương pháp|method",
-    ]),
-    ("product_search", [
-        r"tìm|gợi ý|recommend|suggest|cho tôi|give me|looking for",
-        r"cà phê có vị|coffee with|cà phê.*rang|want.*coffee",
-        r"pha (filter|espresso|pour.?over|drip)",
     ]),
 ]
 

@@ -21,7 +21,11 @@ def _apply_filters(beans_df: pd.DataFrame, entities: dict, skip: set[str] | None
     mask = pd.Series(True, index=beans_df.index)
 
     if entities.get("origin") and "origin" not in skip:
-        mask &= beans_df["country"].str.contains(_as_str(entities["origin"]), case=False, na=False)
+        origin_pat = _as_str(entities["origin"])
+        mask &= (
+            beans_df["country"].str.contains(origin_pat, case=False, na=False) |
+            beans_df["origin"].str.contains(origin_pat, case=False, na=False)
+        )
 
     if entities.get("roast") and "roast" not in skip:
         mask &= beans_df["roast_level_clean"].str.contains(_as_str(entities["roast"]), case=False, na=False)

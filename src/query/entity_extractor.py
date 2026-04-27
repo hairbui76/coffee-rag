@@ -10,6 +10,10 @@ import re
 
 from openai import OpenAI
 
+_ROASTER_JUNK_RE = re.compile(
+    r"(that has|flavor|notes|with|roast|không|có|hương|vị|từ|rang)", re.IGNORECASE
+)
+
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", os.getenv("OPENAI_MODEL", "gemma4:e4b"))
 
 EXTRACT_PROMPT = """\
@@ -31,7 +35,10 @@ IMPORTANT RULES:
   Do NOT include words from a product name.
 - "origin": country or region name (e.g. "Vietnam", "Ethiopia")
 - "roast": roast level (Light, Medium-Light, Medium, Medium-Dark, Dark)
-- "processing": processing method (Washed, Natural, Honey, Anaerobic, etc.)
+- "processing": processing method. Vietnamese translations:
+  "phương pháp ướt"/"chế biến ướt"/"rửa"→"Washed",
+  "tự nhiên"→"Natural", "mật ong"→"Honey", "kỵ khí"→"Anaerobic".
+  English: Washed, Natural, Honey, Anaerobic, etc.
 - "typology": coffee species (Arabica, Robusta, Liberica)
 
 Return ONLY valid JSON with these 7 fields. Use null if not mentioned.
@@ -48,6 +55,9 @@ JSON: {"flavor": ["Floral"], "origin": "Colombia", "roast": "Light", "processing
 
 Query: "Can you recommend a medium roast coffee from Kenya that has brown sugar flavor notes?"
 JSON: {"flavor": ["Brown Sugar"], "origin": "Kenya", "roast": "Medium", "processing": null, "typology": null, "roaster": null, "product": null}
+
+Query: "Bạn có thể giúp tôi tìm loại cà phê chế biến ướt từ Costa Rica, rang vừa, có hương vị đào không?"
+JSON: {"flavor": ["Peach"], "origin": "Costa Rica", "roast": "Medium", "processing": "Washed", "typology": null, "roaster": null, "product": null}
 
 Query: "Compare Ethiopia Yirgacheffe with Kenya AA"
 JSON: {"flavor": null, "origin": null, "roast": null, "processing": null, "typology": null, "roaster": null, "product": null}
@@ -87,7 +97,7 @@ FLAVOR_KEYWORDS = [
     "jasmine", "rose", "lavender", "tea", "wine", "whiskey",
     "plum", "grape", "orange", "lemon", "lime", "grapefruit",
     "sô cô la đen", "sô cô la", "trái cây họ cam",
-    "hoa quả", "trái cây", "hoa", "hạt", "cam",
+    "hoa quả", "trái cây", "hoa", "cam",
     "mật ong", "chua", "đắng", "ngọt", "béo", "kem", "đường nâu",
     "mâm xôi", "hương nhài",
 ]
@@ -158,22 +168,41 @@ def _rule_based_extract(query: str) -> dict:
             entities["typology"] = species.title()
             break
 
-    for proc in ["washed", "natural", "honey", "anaerobic", "wet hulled"]:
-        if proc in q and proc not in product_lower:
-            entities["processing"] = proc.title()
+    VI_PROC_MAP = {
+        "chế biến ướt": "Washed", "phương pháp ướt": "Washed",
+        "phương pháp rửa": "Washed", "chế biến rửa": "Washed",
+        "chế biến tự nhiên": "Natural", "phương pháp tự nhiên": "Natural",
+        "chế biến mật ong": "Honey", "phương pháp mật ong": "Honey",
+        "kỵ khí": "Anaerobic",
+    }
+    for vi_proc, en_proc in VI_PROC_MAP.items():
+        if vi_proc in q:
+            entities["processing"] = en_proc
             break
+    else:
+        for proc in ["washed", "natural", "honey", "anaerobic", "wet hulled"]:
+            if proc in q and proc not in product_lower:
+                entities["processing"] = proc.title()
+                break
 
     return entities
 
 
+_NON_FLAVOR_WORDS = {"hạt", "bean", "beans", "coffee", "cà phê", "loại", "hat"}
+
+
 def _clean_flavors(flavors: list[str] | None) -> list[str] | None:
-    """Deduplicate flavors: map Vietnamese to English, remove duplicates."""
+    """Deduplicate flavors: map Vietnamese to English, title-case, remove non-flavors."""
     if not flavors:
         return flavors
     cleaned: list[str] = []
     seen_lower: set[str] = set()
     for f in flavors:
+        if f.lower() in _NON_FLAVOR_WORDS:
+            continue
         mapped = VI_FLAVOR_MAP.get(f.lower(), f)
+        if mapped == mapped.lower():
+            mapped = mapped.title()
         if mapped.lower() not in seen_lower:
             seen_lower.add(mapped.lower())
             cleaned.append(mapped)
@@ -197,8 +226,28 @@ def extract_entities(query: str, client: OpenAI | None = None) -> dict:
                 for key in expected_keys:
                     result.setdefault(key, None)
                 result["flavor"] = _clean_flavors(result.get("flavor"))
+                result["roaster"] = _validate_roaster(
+                    result.get("roaster"), result.get("origin")
+                )
+                result["country"] = result.get("origin")
                 return result
         except Exception:
             pass
 
-    return _rule_based_extract(query)
+    result = _rule_based_extract(query)
+    result["flavor"] = _clean_flavors(result.get("flavor"))
+    result["country"] = result.get("origin")
+    return result
+
+
+def _validate_roaster(roaster: str | None, origin: str | None) -> str | None:
+    """Reject roaster values that are clearly query fragments, not real roaster names."""
+    if not roaster:
+        return None
+    if origin and origin.lower() in roaster.lower():
+        return None
+    if _ROASTER_JUNK_RE.search(roaster):
+        return None
+    if len(roaster) > 50:
+        return None
+    return roaster
