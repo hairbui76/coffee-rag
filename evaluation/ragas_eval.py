@@ -357,17 +357,17 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     ZERO_PRECISION_STOP_RATIO = 0.2
     stop_event = asyncio.Event()
-    completed_count = 0
     zero_precision_count = 0
+    zero_precision_threshold = math.ceil(ZERO_PRECISION_STOP_RATIO * total)
 
     print(f"\n{'=' * 60}")
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     print(f"  cases={total}  workers={args.workers}  evaluator={args.evaluator_model}")
-    print(f"  early stop: context_precision=0 >= {ZERO_PRECISION_STOP_RATIO:.0%} of cases")
+    print(f"  early stop: context_precision=0 >= {zero_precision_threshold} cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {total})")
     print(f"{'=' * 60}\n")
 
     async def process_one(index: int, case: dict[str, Any]):
-        nonlocal completed_count, zero_precision_count
+        nonlocal zero_precision_count
 
         if stop_event.is_set():
             return
@@ -403,15 +403,13 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
             log_sample(index + 1, total, case, sample, scores, elapsed, args.verbose, stats)
 
-            completed_count += 1
             cp = scores.get("context_precision")
             if cp is not None and cp != "" and float(cp) == 0.0:
                 zero_precision_count += 1
-            if completed_count >= 3 and zero_precision_count / completed_count >= ZERO_PRECISION_STOP_RATIO:
+            if zero_precision_count >= zero_precision_threshold:
                 print(f"\n{'!' * 60}")
-                print(f"  EARLY STOP: {zero_precision_count}/{completed_count} cases "
-                      f"({zero_precision_count/completed_count:.0%}) have context_precision=0")
-                print(f"  Threshold: {ZERO_PRECISION_STOP_RATIO:.0%} — stopping evaluation.")
+                print(f"  EARLY STOP: {zero_precision_count} cases with context_precision=0 "
+                      f"(reached threshold {zero_precision_threshold}, {ZERO_PRECISION_STOP_RATIO:.0%} of {total})")
                 print(f"{'!' * 60}\n")
                 stop_event.set()
 
