@@ -147,6 +147,21 @@ def response_to_text(response: CoffeeResponse | None) -> str:
     return str(response)
 
 
+def response_summary_text(response: CoffeeResponse | None) -> str:
+    """Extract only the summary field for Answer Relevancy scoring.
+
+    The full JSON dump (products, articles, URLs) causes the AR metric to
+    generate reverse-questions dominated by product details rather than the
+    user's original intent, tanking cosine similarity.  Passing just the
+    summary keeps generated questions aligned with the original query.
+    """
+    if response is None:
+        return ""
+    if hasattr(response, "summary"):
+        return response.summary or ""
+    return str(response)
+
+
 def load_existing_ids(csv_path: Path) -> set[str]:
     """Return the set of case IDs already present in the results CSV."""
     if not csv_path.exists():
@@ -219,7 +234,7 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
     elif metric_name == "answer_relevancy":
         result = await metric.ascore(
             user_input=sample["question"],
-            response=sample["response"],
+            response=sample.get("response_summary") or sample["response"],
         )
     else:
         raise ValueError(f"Unsupported metric: {metric_name}")
@@ -293,6 +308,7 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         "question": question,
         "reference": case["ground_truth"],
         "response": response_to_text(response),
+        "response_summary": response_summary_text(response),
         "retrieved_contexts": retrieved_contexts,
         "intent": ctx.get("intent", ""),
         "entities": ctx.get("entities", {}),
