@@ -54,6 +54,22 @@ DEFAULT_METRICS = {
     "retrieval": ["context_precision", "context_recall"],
 }
 
+RETRIEVAL_INTENTS = {"product_search", "similar_search", "news_search"}
+CONTEXT_METRICS = {"context_precision", "context_recall"}
+
+
+def _metrics_for_intent(intent: str, all_metrics: dict[str, Any]) -> dict[str, Any]:
+    """Return only metrics applicable to the given intent.
+
+    Context metrics are skipped for non-retrieval intents because their
+    ground_truth contains conceptual knowledge (knowledge_qa, comparison),
+    aggregate statistics (exploration), or out-of-scope responses (edge_case)
+    that cannot be found in individual bean/news contexts.
+    """
+    if intent in RETRIEVAL_INTENTS:
+        return all_metrics
+    return {k: v for k, v in all_metrics.items() if k not in CONTEXT_METRICS}
+
 
 def _as_list(value: Any) -> list[Any]:
     if value is None:
@@ -358,12 +374,14 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     ZERO_PRECISION_STOP_RATIO = 0.2
     stop_event = asyncio.Event()
     zero_precision_count = 0
-    zero_precision_threshold = math.ceil(ZERO_PRECISION_STOP_RATIO * total)
+    retrieval_case_count = sum(1 for c in cases if c.get("intent", "") in RETRIEVAL_INTENTS)
+    zero_precision_threshold = math.ceil(ZERO_PRECISION_STOP_RATIO * max(retrieval_case_count, 1))
 
     print(f"\n{'=' * 60}")
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
-    print(f"  cases={total}  workers={args.workers}  evaluator={args.evaluator_model}")
-    print(f"  early stop: context_precision=0 >= {zero_precision_threshold} cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {total})")
+    print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
+    print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
+    print(f"  intent-aware: context metrics skipped for knowledge_qa, comparison, exploration, edge_case")
     print(f"{'=' * 60}\n")
 
     async def process_one(index: int, case: dict[str, Any]):
@@ -379,7 +397,9 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
             t0 = time.perf_counter()
 
             sample = await asyncio.to_thread(retrieve_one, rag, case, args)
-            scores = await score_all_metrics(metrics, sample)
+            intent = case.get("intent", sample.get("intent", ""))
+            case_metrics = _metrics_for_intent(intent, metrics)
+            scores = await score_all_metrics(case_metrics, sample)
 
             elapsed = time.perf_counter() - t0
             stats.update(scores)
@@ -404,7 +424,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
             log_sample(index + 1, total, case, sample, scores, elapsed, args.verbose, stats)
 
             cp = scores.get("context_precision")
-            if cp is not None and cp != "" and float(cp) == 0.0:
+            if cp is not None and cp != "" and float(cp) == 0.0 and intent in RETRIEVAL_INTENTS:
                 zero_precision_count += 1
             if zero_precision_count >= zero_precision_threshold:
                 print(f"\n{'!' * 60}")
@@ -523,7 +543,8 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
                 vals = [float(r[mn]) for r in subset if r.get(mn) not in ("", None)]
                 if vals:
                     parts.append(f"{mn}={sum(vals)/len(vals):.3f}")
-            print(f"    {intent:<20s}  n={len(subset):>3d}  {', '.join(parts)}")
+            ctx_note = "" if intent in RETRIEVAL_INTENTS else "  (context metrics skipped)"
+            print(f"    {intent:<20s}  n={len(subset):>3d}  {', '.join(parts)}{ctx_note}")
 
     errors = [row for row in rows if row.get("error")]
     if errors:

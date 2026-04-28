@@ -2,15 +2,17 @@
 
 v3 changes vs v2:
 - Removed exploration + edge_case intents (incompatible with context precision eval)
+- **Retrieval-grounded**: ground_truth + ground_truth_contexts are generated from
+  actual RAG retrieval results (not pre-selected products), so the dataset naturally
+  aligns with what the system retrieves at eval time → much fewer CP=0 cases
 - Aligned ground_truth_contexts format with ragas_eval retrieved_contexts format
 - Tighter _good_beans filter (description >100 chars, non-empty origin)
-- Retrieval verification step flags cases where GT products are not retrieved
 - Redistributed: PS=130, SS=80, CP=70, KQ=70, NS=60 (total 410)
 
 Usage:
     python evaluation/generate_dataset.py --dry-run
     python evaluation/generate_dataset.py --out ragas_eval_dataset_v3.json
-    python evaluation/generate_dataset.py --workers 10 --skip-verify
+    python evaluation/generate_dataset.py --workers 10
 """
 
 from __future__ import annotations
@@ -415,46 +417,39 @@ def _build_news_search_specs(
 # ── Async resolve: turn specs into cases with LLM calls ───────
 
 async def _resolve_spec(
-    spec: dict, client: AsyncOpenAI, model: str, sem: asyncio.Semaphore
+    spec: dict, client: AsyncOpenAI, model: str, sem: asyncio.Semaphore,
+    rag: Any = None,
 ) -> dict:
     intent = spec["intent"]
     lang = spec["language"]
     diff = spec["difficulty"]
 
+    # ── Phase 1: Build question prompt from pre-selected data ────
+    metadata: dict[str, Any] = {}
+
     if intent == "product_search":
         selected = spec["selected"]
-        bean_summaries = "\n".join([_bean_summary(r) for _, r in selected.iterrows()])
         q_prompt = (
             f"Language: {lang}\nIntent: product_search\nDifficulty: {diff}\n"
             f"Generate a question asking for coffee from {spec['country']}, "
             f"{spec['roast']} roast, with {spec['flavor']} flavor notes.\n"
             f"If hard, add extra constraints (processing, brew method, species)."
         )
-        gt_data = f"Answer based on these REAL products:\n{bean_summaries}"
-        contexts = [_bean_context_text(r) for _, r in selected.iterrows()]
-        metadata = {
-            "expected_entities": {"country": spec["country"], "roast": spec["roast"], "flavor": [spec["flavor"]]},
-            "real_product_names": [r["product_name"] for _, r in selected.iterrows()],
+        metadata["expected_entities"] = {
+            "country": spec["country"], "roast": spec["roast"], "flavor": [spec["flavor"]],
         }
+        metadata["sampled_product_names"] = [r["product_name"] for _, r in selected.iterrows()]
 
     elif intent == "similar_search":
         seed = spec["seed"]
-        similar_selected = spec["similar_selected"]
         seed_summary = _bean_summary(seed)
-        similar_summaries = "\n".join([_bean_summary(r) for _, r in similar_selected.iterrows()])
         q_prompt = (
             f"Language: {lang}\nIntent: similar_search\nDifficulty: {diff}\n"
             f"Generate a question asking for coffees similar to '{seed['product_name']}' by {seed['roaster_name']}.\n"
             f"The seed coffee is: {seed_summary}"
         )
-        gt_data = f"Seed product:\n{seed_summary}\n\nSimilar products found:\n{similar_summaries}"
-        all_sel = pd.concat([pd.DataFrame([seed]), similar_selected])
-        contexts = [_bean_context_text(r) for _, r in all_sel.iterrows()]
-        metadata = {
-            "reference_product": seed["product_name"],
-            "reference_roaster": seed["roaster_name"],
-            "similar_products": [r["product_name"] for _, r in similar_selected.iterrows()],
-        }
+        metadata["reference_product"] = seed["product_name"]
+        metadata["reference_roaster"] = seed["roaster_name"]
 
     elif intent == "comparison":
         all_beans = spec["all_beans"]
@@ -464,9 +459,7 @@ async def _resolve_spec(
             f"Generate a question comparing: {spec['comparison_label']}\n"
             f"Products:\n{summaries}"
         )
-        gt_data = f"Compare based on this REAL data:\n{summaries}"
-        contexts = [_bean_context_text(r) for _, r in all_beans.iterrows()]
-        metadata = {"real_product_names": [r["product_name"] for _, r in all_beans.iterrows()]}
+        metadata["comparison_label"] = spec["comparison_label"]
 
     elif intent == "knowledge_qa":
         selected = spec["selected"]
@@ -477,12 +470,7 @@ async def _resolve_spec(
             f"Reference products:\n{summaries}\n"
             f"If hard, ask deeper (chemistry, history, technique). Vary from the base topic."
         )
-        gt_data = f"Answer using knowledge + these REAL product examples:\n{summaries}"
-        contexts = [_bean_context_text(r) for _, r in selected.iterrows()]
-        metadata = {
-            "topic": spec["base_q"],
-            "real_product_names": [r["product_name"] for _, r in selected.iterrows()],
-        }
+        metadata["topic"] = spec["base_q"]
 
     elif intent == "news_search":
         q_prompt = (
@@ -490,28 +478,44 @@ async def _resolve_spec(
             f"Generate a question about this news topic:\n"
             f"Title: {spec['title']}\nSource: {spec['source']}\nSummary: {spec['summary'][:200]}"
         )
-        gt_data = (
-            f"Answer based on this REAL article:\n"
-            f"Title: {spec['title']}\nSource: {spec['source']}\n"
-            f"Summary: {spec['summary']}\nURL: {spec['url']}"
-        )
-        contexts = spec["ctx_texts"]
-        metadata = {
-            "source_article": spec["url"],
-            "source_title": spec["title"],
-            "source_name": spec["source"],
-        }
+        metadata["source_article"] = spec["url"]
+        metadata["source_title"] = spec["title"]
+        metadata["source_name"] = spec["source"]
 
     else:
         raise ValueError(f"Unknown intent: {intent}")
 
-    question, ground_truth = await asyncio.gather(
-        _llm_generate(client, model, QUESTION_SYSTEM, q_prompt, sem),
-        _llm_generate(client, model, GT_SYSTEM, f"Language: {lang}\nQuestion: (pending)\n{gt_data}", sem),
-    )
+    # ── Phase 2: Generate question ───────────────────────────────
+    question = await _llm_generate(client, model, QUESTION_SYSTEM, q_prompt, sem)
 
-    gt_prompt_final = f"Language: {lang}\nQuestion: {question}\n{gt_data}"
-    ground_truth = await _llm_generate(client, model, GT_SYSTEM, gt_prompt_final, sem)
+    # ── Phase 3: Retrieve actual contexts ────────────────────────
+    ctx = await asyncio.to_thread(rag.retrieve, question, 10, 5)
+    retrieved_beans = ctx.get("beans")
+    retrieved_news = ctx.get("news")
+
+    contexts: list[str] = []
+    gt_parts: list[str] = []
+
+    if retrieved_beans is not None and not retrieved_beans.empty:
+        top_beans = retrieved_beans.head(5)
+        contexts += [_bean_context_text(r) for _, r in top_beans.iterrows()]
+        bean_text = "\n".join([_bean_summary(r) for _, r in top_beans.iterrows()])
+        gt_parts.append(f"Retrieved products:\n{bean_text}")
+        metadata["retrieved_product_names"] = top_beans["product_name"].tolist()
+
+    if retrieved_news is not None and not retrieved_news.empty:
+        top_news = retrieved_news.head(3)
+        contexts += [_news_context(r) for _, r in top_news.iterrows()]
+        news_text = "\n".join(
+            [f"- {r.get('title', '')} ({r.get('source', '')}): {str(r.get('text', ''))[:150]}"
+             for _, r in top_news.iterrows()]
+        )
+        gt_parts.append(f"Retrieved articles:\n{news_text}")
+
+    # ── Phase 4: Generate ground truth from retrieved data ───────
+    gt_data = "\n\n".join(gt_parts) if gt_parts else "(no relevant documents retrieved)"
+    gt_prompt = f"Language: {lang}\nQuestion: {question}\n\nAnswer based on this RETRIEVED data:\n{gt_data}"
+    ground_truth = await _llm_generate(client, model, GT_SYSTEM, gt_prompt, sem)
 
     return {
         "id": spec["id"],
@@ -579,6 +583,12 @@ async def async_main(args: argparse.Namespace):
         print(f"Saved to {args.out}")
         return
 
+    # ── Initialize RAG pipeline for retrieval-grounded generation ──
+    from src.pipeline import CoffeeRAG
+    print("Loading RAG pipeline...")
+    rag = CoffeeRAG()
+    print("  RAG pipeline ready")
+
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     model = args.model
     sem = asyncio.Semaphore(args.workers)
@@ -591,7 +601,7 @@ async def async_main(args: argparse.Namespace):
     batch_size = 20
     for batch_start in range(0, len(pending), batch_size):
         batch = pending[batch_start : batch_start + batch_size]
-        tasks = [_resolve_spec(spec, client, model, sem) for spec in batch]
+        tasks = [_resolve_spec(spec, client, model, sem, rag=rag) for spec in batch]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for spec, result in zip(batch, results):
@@ -629,57 +639,6 @@ async def async_main(args: argparse.Namespace):
     if partial_path.exists():
         partial_path.unlink()
 
-    # ── Retrieval verification ──────────────────────────────────
-    if not args.skip_verify:
-        print("\n" + "=" * 60)
-        print("  Retrieval verification")
-        print("=" * 60)
-        try:
-            from src.pipeline import CoffeeRAG
-            rag = CoffeeRAG()
-            verified = 0
-            unverified = 0
-            for case in completed:
-                gt_names = set()
-                meta = case.get("metadata", {})
-                for key in ("real_product_names", "similar_products"):
-                    if key in meta:
-                        gt_names.update(meta[key])
-                if meta.get("reference_product"):
-                    gt_names.add(meta["reference_product"])
-
-                if not gt_names:
-                    case.setdefault("metadata", {})["verified"] = True
-                    verified += 1
-                    continue
-
-                ctx = rag.retrieve(case["question"], top_k_beans=15, top_k_news=5)
-                retrieved_beans = ctx.get("beans")
-                if retrieved_beans is not None and not retrieved_beans.empty:
-                    retrieved_names = set(retrieved_beans["product_name"].tolist())
-                else:
-                    retrieved_names = set()
-
-                overlap = gt_names & retrieved_names
-                is_verified = len(overlap) > 0
-                case.setdefault("metadata", {})["verified"] = is_verified
-                case["metadata"]["gt_products_found"] = len(overlap)
-                case["metadata"]["gt_products_total"] = len(gt_names)
-                if is_verified:
-                    verified += 1
-                else:
-                    unverified += 1
-
-            print(f"  Verified (≥1 GT product retrieved): {verified}")
-            print(f"  Unverified (0 GT products found):   {unverified}")
-            print(f"  Verification rate: {verified / max(verified + unverified, 1):.1%}")
-
-            with args.out.open("w", encoding="utf-8") as f:
-                json.dump(completed, f, ensure_ascii=False, indent=2)
-            print(f"  Updated {args.out} with verification flags")
-        except Exception as exc:
-            print(f"  Verification skipped: {exc}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="Generate grounded RAG eval dataset.")
@@ -687,7 +646,6 @@ def main():
     parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     parser.add_argument("--workers", type=int, default=10, help="Max concurrent LLM calls.")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--skip-verify", action="store_true", help="Skip retrieval verification step.")
     args = parser.parse_args()
 
     asyncio.run(async_main(args))

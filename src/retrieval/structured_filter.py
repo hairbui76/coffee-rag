@@ -2,7 +2,12 @@
 
 import re
 
+import numpy as np
 import pandas as pd
+
+
+def _is_array(x) -> bool:
+    return isinstance(x, (list, np.ndarray))
 
 
 def _as_str(value) -> str:
@@ -13,6 +18,15 @@ def _as_str(value) -> str:
 
 
 MIN_RESULTS = 3
+
+_ROAST_NORMALIZE = {
+    "medium light": "Medium-Light",
+    "medium dark": "Medium-Dark",
+}
+
+
+def _normalize_roast(value: str) -> str:
+    return _ROAST_NORMALIZE.get(value.lower().strip(), value)
 
 
 def _apply_filters(beans_df: pd.DataFrame, entities: dict, skip: set[str] | None = None) -> pd.DataFrame:
@@ -28,22 +42,23 @@ def _apply_filters(beans_df: pd.DataFrame, entities: dict, skip: set[str] | None
         )
 
     if entities.get("roast") and "roast" not in skip:
-        mask &= beans_df["roast_level_clean"].str.contains(_as_str(entities["roast"]), case=False, na=False)
+        roast_val = _normalize_roast(entities["roast"])
+        mask &= beans_df["roast_level_clean"].str.contains(_as_str(roast_val), case=False, na=False)
 
     if entities.get("flavor") and "flavor" not in skip:
         flavors = entities["flavor"]
         if isinstance(flavors, str):
             flavors = [flavors]
-        flat = beans_df["flavor_notes_clean"].apply(lambda x: " ".join(x).lower() if isinstance(x, list) else "")
+        flat = beans_df["flavor_notes_clean"].apply(lambda x: " ".join(x).lower() if _is_array(x) else "")
         for f in flavors:
             mask &= flat.str.contains(re.escape(f.lower()), na=False)
 
     if entities.get("typology") and "typology" not in skip:
-        species_flat = beans_df["species"].apply(lambda x: " ".join(x).lower() if isinstance(x, list) else "")
+        species_flat = beans_df["species"].apply(lambda x: " ".join(x).lower() if _is_array(x) else "")
         mask &= species_flat.str.contains(_as_str(entities["typology"]).lower(), na=False)
 
     if entities.get("processing") and "processing" not in skip:
-        proc_flat = beans_df["processing_clean"].apply(lambda x: " ".join(x).lower() if isinstance(x, list) else "")
+        proc_flat = beans_df["processing_clean"].apply(lambda x: " ".join(x).lower() if _is_array(x) else "")
         mask &= proc_flat.str.contains(_as_str(entities["processing"]).lower(), na=False)
 
     return beans_df[mask]

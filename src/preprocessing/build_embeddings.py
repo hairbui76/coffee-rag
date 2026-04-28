@@ -16,7 +16,7 @@ BEANS_PATH = ROOT / "data" / "processed" / "beans_clean.parquet"
 CHUNKS_PATH = ROOT / "data" / "processed" / "news_chunks.parquet"
 EMB_DIR = ROOT / "data" / "embeddings"
 
-MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 
 

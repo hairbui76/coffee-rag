@@ -19,7 +19,7 @@ load_dotenv(ROOT / ".env")
 EMB_DIR = ROOT / "data" / "embeddings"
 DATA_DIR = ROOT / "data" / "processed"
 
-MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
 
 class SemanticSearcher:
