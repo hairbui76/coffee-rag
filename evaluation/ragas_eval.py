@@ -196,16 +196,22 @@ def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, l
     return cases
 
 
-def build_metrics(names: list[str], evaluator_model: str, embedding_model: str):
+def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
+                  ar_embedding_model: str | None = None):
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     llm = llm_factory(evaluator_model, client=client)
     embeddings = embedding_factory("openai", model=embedding_model, client=client)
+    ar_embeddings = (
+        embedding_factory("openai", model=ar_embedding_model, client=client)
+        if ar_embedding_model and ar_embedding_model != embedding_model
+        else embeddings
+    )
 
     available = {
         "faithfulness": Faithfulness(llm=llm),
         "context_precision": ContextPrecision(llm=llm),
         "context_recall": ContextRecall(llm=llm),
-        "answer_relevancy": AnswerRelevancy(llm=llm, embeddings=embeddings),
+        "answer_relevancy": AnswerRelevancy(llm=llm, embeddings=ar_embeddings),
     }
     return {name: available[name] for name in names}
 
@@ -396,7 +402,8 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
         print("No cases matched filters.")
         return []
 
-    metrics = build_metrics(metric_names, args.evaluator_model, args.embedding_model)
+    metrics = build_metrics(metric_names, args.evaluator_model, args.embedding_model,
+                             ar_embedding_model=args.ar_embedding_model)
     rag = CoffeeRAG()
     total = len(cases)
     stats = RunningStats()
@@ -413,6 +420,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"\n{'=' * 60}")
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
+    print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
     print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
     print(f"  intent-aware: context metrics skipped for knowledge_qa, comparison, exploration, edge_case")
     print(f"{'=' * 60}\n")
@@ -579,6 +587,19 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
             ctx_note = "" if intent in RETRIEVAL_INTENTS else "  (context metrics skipped)"
             print(f"    {intent:<20s}  n={len(subset):>3d}  {', '.join(parts)}{ctx_note}")
 
+    # Breakdown by language
+    languages = sorted({row.get("language", "") for row in rows} - {""})
+    if len(languages) > 1:
+        print(f"\n  By language:")
+        for lang in languages:
+            subset = [row for row in rows if row.get("language") == lang]
+            parts = []
+            for mn in metric_names:
+                vals = [float(r[mn]) for r in subset if r.get(mn) not in ("", None)]
+                if vals:
+                    parts.append(f"{mn}={sum(vals)/len(vals):.3f}")
+            print(f"    {lang:<20s}  n={len(subset):>3d}  {', '.join(parts)}")
+
     errors = [row for row in rows if row.get("error")]
     if errors:
         print(f"\n  errors: {len(errors)} rows (see CSV error column)")
@@ -609,6 +630,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", "-v", action="store_true", help="Show entities, context counts, running averages per sample.")
     parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL", "gpt-4o-mini"))
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"))
+    parser.add_argument("--ar-embedding-model", default=os.getenv("RAGAS_AR_EMBEDDING_MODEL", "text-embedding-3-large"),
+                        help="Embedding model for Answer Relevancy (cross-lingual). Defaults to text-embedding-3-large.")
     return parser.parse_args()
 
 
