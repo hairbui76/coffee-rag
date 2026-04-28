@@ -212,11 +212,14 @@ entities = {
 **Mục đích:** Lọc nhanh candidates từ DB dựa trên metadata có cấu trúc.
 
 ```python
+def _is_array(x):
+    """Parquet stores list columns as numpy.ndarray, not Python list."""
+    return isinstance(x, (list, np.ndarray))
+
 def structured_filter(beans_df, entities):
     mask = pd.Series(True, index=beans_df.index)
 
     if entities.get("origin"):
-        # Check cả country + origin column (để bắt 3760 beans có country rỗng)
         origin_pat = re.escape(entities["origin"])
         mask &= (
             beans_df["country"].str.contains(origin_pat, case=False, na=False) |
@@ -224,19 +227,27 @@ def structured_filter(beans_df, entities):
         )
 
     if entities.get("roast"):
-        mask &= beans_df["roast_level_clean"].str.contains(entities["roast"], case=False, na=False)
+        # Normalize: "Medium Light" → "Medium-Light" để khớp DB
+        roast_val = _ROAST_NORMALIZE.get(entities["roast"].lower(), entities["roast"])
+        mask &= beans_df["roast_level_clean"].str.contains(roast_val, case=False, na=False)
 
     if entities.get("flavor"):
-        flat = beans_df["flavor_notes_clean"].apply(lambda x: " ".join(x).lower())
+        flat = beans_df["flavor_notes_clean"].apply(
+            lambda x: " ".join(x).lower() if _is_array(x) else ""
+        )
         for f in entities["flavor"]:
             mask &= flat.str.contains(re.escape(f.lower()), na=False)
 
     if entities.get("typology"):
-        species_flat = beans_df["species"].apply(lambda x: " ".join(x).lower())
+        species_flat = beans_df["species"].apply(
+            lambda x: " ".join(x).lower() if _is_array(x) else ""
+        )
         mask &= species_flat.str.contains(entities["typology"].lower(), na=False)
 
     if entities.get("processing"):
-        proc_flat = beans_df["processing_clean"].apply(lambda x: " ".join(x).lower())
+        proc_flat = beans_df["processing_clean"].apply(
+            lambda x: " ".join(x).lower() if _is_array(x) else ""
+        )
         mask &= proc_flat.str.contains(entities["processing"].lower(), na=False)
 
     return beans_df[mask]
@@ -265,10 +276,10 @@ theo thứ tự `processing → typology → roast` cho đến khi đủ kết q
 
 3. Embed tất cả documents bằng sentence-transformer:
    ```
-   Model hiện tại: paraphrase-multilingual-MiniLM-L12-v2 (dim=384, multilingual)
+   Model hiện tại: BAAI/bge-m3 (dim=1024, multilingual, dense+sparse)
    ```
 
-4. Lưu vectors vào **FAISS** (IndexFlatIP hoặc IndexIVFFlat) hoặc **ChromaDB**.
+4. Lưu vectors vào **FAISS** IndexFlatIP (inner product = cosine similarity do L2-normalized).
 
 **Querying (online):**
 
@@ -330,8 +341,9 @@ và chọn prompt tương ứng:
 - **VI:** `"Bạn là Coffee Advisor... Trả lời HOÀN TOÀN bằng TIẾ̀NG VIỆT..."`
 - **EN:** `"You are Coffee Advisor... You MUST respond ENTIRELY in ENGLISH..."`
 
-**LLM:** Gemma 4 E4B (qua Ollama, OpenAI-compatible API).
-Hỗ trợ cả Ollama (local) và OpenAI API (cloud) qua biến môi trường `LLM_PROVIDER`.
+**LLM:** Hỗ trợ 2 provider qua biến `LLM_PROVIDER`:
+- `openai` → OpenAI API (GPT-4o-mini mặc định)
+- `ollama` → Ollama local (Gemma 4 E4B mặc định)
 
 ---
 
@@ -417,11 +429,13 @@ def chunk_article(article):
 
 ```
 coffee-rag/
-├── AGENTS.md                    # Mô tả hệ thống RAG (file này)
+├── README.md                    # Tổng quan hệ thống (English)
+├── AGENTS.md                    # Chi tiết thiết kế hệ thống (file này)
 ├── coffee_beans.json            # Dữ liệu beans gốc (14,537 sản phẩm)
 ├── coffee_news.json             # Dữ liệu news gốc (1,947 bài báo)
-├── ragas_eval_dataset_v2.json   # Dataset đánh giá (RAGAS format)
+├── ragas_eval_dataset.json      # Dataset đánh giá chính (500 cases, RAGAS format)
 ├── requirements.txt
+├── .env.example                 # Template biến môi trường
 │
 ├── data/
 │   ├── processed/
@@ -429,8 +443,8 @@ coffee-rag/
 │   │   ├── news_clean.parquet   # News sau khi cleaning (1,947 rows)
 │   │   └── news_chunks.parquet  # News đã chunk (13,427 chunks)
 │   └── embeddings/
-│       ├── beans_embeddings.npy # Embedding vectors (dim=384)
-│       ├── news_embeddings.npy  # Embedding vectors (dim=384)
+│       ├── beans_embeddings.npy # Embedding vectors (14537 × 1024, BAAI/bge-m3)
+│       ├── news_embeddings.npy  # Embedding vectors (13427 × 1024, BAAI/bge-m3)
 │       ├── beans.index          # FAISS IndexFlatIP
 │       └── news.index           # FAISS IndexFlatIP
 │
@@ -454,9 +468,9 @@ coffee-rag/
 │   └── pipeline.py              # Orchestrate M1→M4
 │
 ├── evaluation/
-│   ├── ragas_eval_debug.py      # Debug script cho retrieval
-│   ├── ragas_eval.py            # RAGAS evaluation runner
-│   ├── generate_dataset.py      # Tạo eval dataset
+│   ├── ragas_eval.py            # RAGAS evaluation runner (intent-aware metrics)
+│   ├── generate_dataset.py      # Tạo eval dataset (LLM-powered, retrieval-grounded)
+│   ├── fix_ground_truth.py      # Utility: thay ground_truth_contexts bằng real beans
 │   └── results/                 # CSV kết quả đánh giá
 │
 ├── app/
@@ -478,15 +492,16 @@ pyarrow>=14.0
 pydantic>=2.0                   # Structured LLM output schemas
 
 # Embedding & Vector Search
-sentence-transformers>=2.7      # model: paraphrase-multilingual-MiniLM-L12-v2
-faiss-cpu>=1.7                  # IndexFlatIP (inner product)
+sentence-transformers>=2.7      # model: BAAI/bge-m3 (1024-dim, multilingual)
+faiss-cpu>=1.7                  # IndexFlatIP (inner product = cosine similarity)
 
 # Text Processing
 langchain-text-splitters>=0.2   # RecursiveCharacterTextSplitter
 
-# LLM (Gemma 4 E4B via Ollama)
-openai>=1.0                     # OpenAI-compatible client for Ollama
+# LLM (OpenAI GPT-4o-mini hoặc Ollama Gemma 4 E4B)
+openai>=1.0                     # OpenAI-compatible client
 python-dotenv>=1.0              # .env config loading
+ragas>=0.4.3                    # RAG evaluation framework
 
 # UI
 streamlit>=1.30
@@ -498,15 +513,19 @@ streamlit>=1.30
 # 1. Cài dependencies
 pip install -r requirements.txt
 
-# 2. Chạy Ollama với Gemma 4 E4B
-ollama pull gemma4:e4b
-ollama serve
+# 2. Cấu hình
+cp .env.example .env
+# Chỉnh LLM_PROVIDER, OPENAI_API_KEY, EMBEDDING_MODEL trong .env
 
 # 3. (Nếu chưa có data processed) Chạy preprocessing
 python -m src.preprocessing.clean_beans
 python -m src.preprocessing.clean_news
-python -m src.preprocessing.build_embeddings
+python -m src.preprocessing.build_embeddings   # --force nếu đổi model
 
 # 4. Chạy chatbot UI
 streamlit run app/streamlit_app.py
+
+# 5. Chạy evaluation
+python -m evaluation.ragas_eval --mode retrieval --limit 50
+python -m evaluation.ragas_eval --mode full --limit 20
 ```
