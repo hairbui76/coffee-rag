@@ -201,17 +201,36 @@ def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     llm = llm_factory(evaluator_model, client=client)
     embeddings = embedding_factory("openai", model=embedding_model, client=client)
-    ar_embeddings = (
-        embedding_factory("openai", model=ar_embedding_model, client=client)
-        if ar_embedding_model and ar_embedding_model != embedding_model
-        else embeddings
+
+    # Build AR embeddings: use HuggingFace for models with "/" (e.g. BAAI/bge-m3),
+    # otherwise use OpenAI provider.
+    if ar_embedding_model and ar_embedding_model != embedding_model:
+        if "/" in ar_embedding_model:
+            ar_embeddings = embedding_factory(
+                "huggingface", model=ar_embedding_model, interface="modern",
+            )
+        else:
+            ar_embeddings = embedding_factory(
+                "openai", model=ar_embedding_model, client=client,
+            )
+    else:
+        ar_embeddings = embeddings
+
+    ar_metric = AnswerRelevancy(llm=llm, embeddings=ar_embeddings)
+    # Patch prompt to force same-language reverse-question generation.
+    # Without this, the English-only examples bias the LLM to generate
+    # English questions from Vietnamese responses, tanking cosine similarity.
+    ar_metric.prompt.instruction += (
+        "\nIMPORTANT: Generate the question in the SAME LANGUAGE as the response. "
+        "If the response is in Vietnamese, generate a Vietnamese question. "
+        "If the response is in English, generate an English question."
     )
 
     available = {
         "faithfulness": Faithfulness(llm=llm),
         "context_precision": ContextPrecision(llm=llm),
         "context_recall": ContextRecall(llm=llm),
-        "answer_relevancy": AnswerRelevancy(llm=llm, embeddings=ar_embeddings),
+        "answer_relevancy": ar_metric,
     }
     return {name: available[name] for name in names}
 
@@ -630,8 +649,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", "-v", action="store_true", help="Show entities, context counts, running averages per sample.")
     parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL", "gpt-4o-mini"))
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"))
-    parser.add_argument("--ar-embedding-model", default=os.getenv("RAGAS_AR_EMBEDDING_MODEL", "text-embedding-3-large"),
-                        help="Embedding model for Answer Relevancy (cross-lingual). Defaults to text-embedding-3-large.")
+    parser.add_argument("--ar-embedding-model", default=os.getenv("RAGAS_AR_EMBEDDING_MODEL", "BAAI/bge-m3"),
+                        help="Embedding model for Answer Relevancy (multilingual). Defaults to BAAI/bge-m3.")
     return parser.parse_args()
 
 
