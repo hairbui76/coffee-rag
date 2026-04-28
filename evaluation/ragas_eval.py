@@ -127,7 +127,7 @@ def _news_contexts(news_df) -> list[str]:
             "Article: {title}. Source: {source}. Date: {date}. Content: {content}. URL: {url}".format(
                 title=_as_str(row.get("title")),
                 source=_as_str(row.get("source")),
-                date=_as_str(row.get("publish_datetime")),
+                date=str(row.get("publish_datetime", ""))[:10],
                 content=_as_str(row.get("text") or row.get("summary") or row.get("content_text")),
                 url=_as_str(row.get("article_url")),
             )
@@ -251,6 +251,7 @@ MAX_EVAL_CONTEXTS = 20
 
 
 PRODUCT_INTENTS = {"product_search", "similar_search"}
+NEWS_INTENTS = {"news_search"}
 
 
 def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -265,14 +266,22 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
     news_count = len(news) if news is not None and not getattr(news, "empty", True) else 0
 
     eval_ctx = dict(ctx)
-    if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
-        eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
-    # Drop news from eval contexts for product/similar intents — news articles
-    # are always irrelevant for product retrieval and tank context_precision.
+    # Drop irrelevant context type per intent to avoid noise in CP scoring.
     if intent in PRODUCT_INTENTS:
+        # News articles are always irrelevant for product retrieval.
         eval_ctx["news"] = None
-    elif news is not None and len(news) > MAX_EVAL_CONTEXTS:
-        eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
+        if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
+            eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
+    elif intent in NEWS_INTENTS:
+        # Bean contexts are irrelevant for news queries.
+        eval_ctx["beans"] = None
+        if news is not None and len(news) > MAX_EVAL_CONTEXTS:
+            eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
+    else:
+        if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
+            eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
+        if news is not None and len(news) > MAX_EVAL_CONTEXTS:
+            eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
     retrieved_contexts = build_retrieved_contexts(eval_ctx)
 
     response = None

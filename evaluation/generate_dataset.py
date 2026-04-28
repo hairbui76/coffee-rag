@@ -496,15 +496,19 @@ async def _resolve_spec(
     contexts: list[str] = []
     gt_parts: list[str] = []
 
-    if retrieved_beans is not None and not retrieved_beans.empty:
+    # Include only the relevant context type per intent to reduce noise.
+    include_beans = intent not in ("news_search",)
+    include_news = intent not in ("product_search", "similar_search")
+
+    if include_beans and retrieved_beans is not None and not retrieved_beans.empty:
         top_beans = retrieved_beans.head(5)
         contexts += [_bean_context_text(r) for _, r in top_beans.iterrows()]
         bean_text = "\n".join([_bean_summary(r) for _, r in top_beans.iterrows()])
         gt_parts.append(f"Retrieved products:\n{bean_text}")
         metadata["retrieved_product_names"] = top_beans["product_name"].tolist()
 
-    if retrieved_news is not None and not retrieved_news.empty:
-        top_news = retrieved_news.head(3)
+    if include_news and retrieved_news is not None and not retrieved_news.empty:
+        top_news = retrieved_news.head(5)
         contexts += [_news_context(r) for _, r in top_news.iterrows()]
         news_text = "\n".join(
             [f"- {r.get('title', '')} ({r.get('source', '')}): {str(r.get('text', ''))[:150]}"

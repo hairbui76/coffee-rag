@@ -332,7 +332,7 @@ def retrieve_one(rag, case, args):
     question = case["question"]
 
     # 1. Chạy RAG pipeline (M1 → M2 → M3)
-    ctx = rag.retrieve(question, top_k_beans=10, top_k_news=5)
+    ctx = rag.retrieve(question, top_k_beans=5, top_k_news=5)
     #   → ctx["intent"]   : intent được classify
     #   → ctx["entities"] : entities được extract
     #   → ctx["beans"]    : DataFrame top-K beans (sau RRF)
@@ -403,6 +403,135 @@ Article: {title}. Source: {source}. Date: {publish_datetime}. Content: {text}. U
 ```
 
 **Format này phải ĐỒNG NHẤT** giữa `generate_dataset.py::_bean_context_text()` và `ragas_eval.py::_bean_contexts()`. Nếu khác → RAGAS so sánh text khác nhau → CR giảm giả tạo.
+
+---
+
+## Post-RRF Prioritization
+
+File: `src/pipeline.py` — `_prioritize_matching()`
+
+### Vấn đề cần giải quyết
+
+RRF (Reciprocal Rank Fusion) merge **semantic search** + **structured filter** thành một ranked list. Tuy nhiên RRF có thể đẩy beans sai criteria lên cao vì:
+
+- **Semantic search** tìm beans *ngữ nghĩa gần* với query — nhưng "Ethiopia chocolate" và "Colombia chocolate" semantically gần nhau → Ethiopia beans lọt vào kết quả khi user hỏi Colombia
+- **RRF score** thuần túy là hàm của rank, không phân biệt "match đúng origin" hay "chỉ match flavor"
+
+**Kết quả:** Nếu top-5 chứa 2 beans sai origin/roast → RAGAS CP giảm mạnh vì LLM judge đánh irrelevant.
+
+### Cơ chế hoạt động
+
+```
+           Query: "Colombia medium roast chocolate"
+                        │
+           ┌────────────┴────────────┐
+           │                         │
+   ┌───────▼────────┐      ┌─────────▼──────────┐
+   │ Semantic Search │      │ Structured Filter   │
+   │  top_k × 3=15  │      │ (origin+roast+...)  │
+   │                │      │                     │
+   │ #1 Eth Med Choc│      │ #1 Col Med Choc ✅  │
+   │ #2 Col Drk Choc│      │ #2 Col Med Nut  ✅  │
+   │ #3 Bra Med Choc│      │ #3 Col Med Fruit✅  │
+   │ ...            │      │ ...                 │
+   └───────┬────────┘      └─────────┬──────────┘
+           │                         │
+           └────────────┬────────────┘
+                        │
+               ┌────────▼─────────┐
+               │   RRF Fusion      │
+               │  top_k × 2 = 10  │  ← over-fetch 2×
+               │                  │
+               │ #1 Col Med Choc  │  RRF score cao (xuất hiện cả 2 list)
+               │ #2 Eth Med Choc  │  RRF score cao (rank 1 semantic)
+               │ #3 Col Med Nut   │
+               │ #4 Bra Med Choc  │
+               │ #5 Col Drk Choc  │
+               │ #6 Col Med Fruit │
+               │ ...              │
+               └────────┬─────────┘
+                        │
+               ┌────────▼──────────────────────────┐
+               │   _prioritize_matching()           │
+               │                                   │
+               │  Score mỗi bean (0-2):            │
+               │    +1 nếu origin match (Colombia) │
+               │    +1 nếu roast match (Medium)    │
+               │                                   │
+               │  #1 Col Med Choc  → score=2  ✅✅ │
+               │  #3 Col Med Nut   → score=2  ✅✅ │
+               │  #6 Col Med Fruit → score=2  ✅✅ │
+               │  #5 Col Drk Choc  → score=1  ✅❌ │  origin✓ roast✗
+               │  #2 Eth Med Choc  → score=1  ❌✅ │  origin✗ roast✓
+               │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+               │  #4 Bra Med Choc  → score=0  ❌❌ │  ← CẮT BỎ
+               │  #7 ...           → score=0       │  ← CẮT BỎ
+               │                                   │
+               │  Sort: score DESC → rank ASC      │
+               │  Take top-5                       │
+               └────────┬──────────────────────────┘
+                        │
+                   Final 5 beans
+                   (3×score=2 → 2×score=1)
+```
+
+### Tại sao over-fetch 2× trước khi prioritize?
+
+Nếu fetch đúng top-5 từ RRF, có thể tất cả 5 đều là semantic-only (score=0) khi structured filter trả về ít kết quả. Over-fetch 10 beans cho `_prioritize_matching` nhiều lựa chọn hơn → đảm bảo beans match criteria được đẩy vào top-5 thay vì bị RRF cắt sớm.
+
+### Tại sao chỉ check origin + roast, không check flavor?
+
+| Tiêu chí | Check? | Lý do |
+|---|:---:|---|
+| **origin/country** | ✅ | Exact match đơn giản (`contains` case-insensitive) |
+| **roast_level** | ✅ | Exact match sau normalize (`Medium` == `Medium`) |
+| **flavor** | ❌ | Phức tạp: synonym ("Chocolate" vs "Cocoa"), multilingual, substring — dễ false negative |
+| **processing** | ❌ | Optional constraint, ít ảnh hưởng CP |
+
+Flavor đã được semantic search xử lý tốt (embedding space capture similarity). Origin và roast là **hard constraints** của user → cần enforce explicitly.
+
+### Giới hạn và edge cases
+
+**CP vẫn thấp khi:**
+
+1. **Combo không tồn tại trong DB** — Ví dụ: `Mexico + Medium-Light + Vanilla` gần như 0 beans → cả 10 beans over-fetched đều score=0 → top-5 toàn irrelevant → CP=0
+
+2. **Chỉ 1-2 beans match đầy đủ** — Nếu DB chỉ có 2 beans đúng combo, top-5 phải pad bằng partial-match (score=1) hoặc no-match (score=0) → CP=0.4-0.6 thay vì 1.0
+
+3. **Entity extraction fail** — Nếu M1 extract sai origin hoặc roast → `_prioritize_matching` dùng entities sai → prioritize sai beans
+
+**Ví dụ thực tế từ v12 (100 cases):**
+
+| Outcome | Cases | Nguyên nhân |
+|---|---:|---|
+| CP = 1.0 | 59 (59%) | Tất cả 5 beans đều relevant |
+| CP = 0.5-0.75 | 20 (20%) | 2-3/5 beans relevant (partial match) |
+| CP = 0 | 9 (9%) | Combo cực hiếm, không đủ beans match |
+
+### Code tham khảo
+
+```python
+# src/pipeline.py
+def _prioritize_matching(beans: pd.DataFrame, entities: dict, top_k: int) -> pd.DataFrame:
+    origin = entities.get("origin", "") or ""
+    roast  = entities.get("roast", "")  or ""
+    scores = []
+    for _, row in beans.iterrows():
+        s = 0
+        if origin:
+            if re.search(re.escape(origin), str(row.get("country", "")), re.IGNORECASE) or \
+               re.search(re.escape(origin), str(row.get("origin", "")), re.IGNORECASE):
+                s += 1
+        if roast:
+            if str(row.get("roast_level_clean", "")).lower().strip() == roast.lower().strip():
+                s += 1
+        scores.append(s)
+    beans = beans.copy()
+    beans["_match_score"] = scores
+    beans["_orig_rank"]   = range(len(beans))
+    beans = beans.sort_values(["_match_score", "_orig_rank"], ascending=[False, True])
+    return beans.head(top_k).drop(columns=["_match_score", "_orig_rank"]).reset_index(drop=True)
+```
 
 ---
 
