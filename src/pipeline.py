@@ -1,8 +1,10 @@
 """Full RAG pipeline: Query → Understand → Retrieve → Re-rank → Generate."""
 
 import os
+import re
 
 import numpy as np
+import pandas as pd
 
 from src.query.intent_classifier import classify_intent
 from src.query.entity_extractor import extract_entities
@@ -13,6 +15,38 @@ from src.retrieval.reranker import reciprocal_rank_fusion
 from src.generation.prompt_templates import build_prompt
 from src.generation.llm_client import get_client, generate_structured
 from src.generation.schemas import CoffeeResponse
+
+
+def _prioritize_matching(beans: "pd.DataFrame", entities: dict, top_k: int) -> "pd.DataFrame":
+    """Re-order beans so those matching critical entities (origin, roast) come first.
+
+    Scores each bean 0-2 based on origin and roast match, then sorts by
+    (match_score DESC, original_rank ASC) and returns top_k.
+    """
+    origin = entities.get("origin", "") or ""
+    roast = entities.get("roast", "") or ""
+
+    scores = []
+    for _, row in beans.iterrows():
+        s = 0
+        if origin:
+            row_country = str(row.get("country", ""))
+            row_origin = str(row.get("origin", ""))
+            if re.search(re.escape(origin), row_country, re.IGNORECASE) or \
+               re.search(re.escape(origin), row_origin, re.IGNORECASE):
+                s += 1
+        if roast:
+            row_roast = str(row.get("roast_level_clean", ""))
+            if row_roast.lower().strip() == roast.lower().strip():
+                s += 1
+        scores.append(s)
+
+    beans = beans.copy()
+    beans["_match_score"] = scores
+    beans["_orig_rank"] = range(len(beans))
+    beans = beans.sort_values(["_match_score", "_orig_rank"], ascending=[False, True])
+    beans = beans.head(top_k).drop(columns=["_match_score", "_orig_rank"])
+    return beans.reset_index(drop=True)
 
 
 class CoffeeRAG:
@@ -80,9 +114,16 @@ class CoffeeRAG:
             result_lists.append(struct_beans)
 
         if len(result_lists) > 1:
-            beans = reciprocal_rank_fusion(*result_lists, top_k=top_k_beans)
+            beans = reciprocal_rank_fusion(*result_lists, top_k=top_k_beans * 2)
         else:
-            beans = sem_beans.head(top_k_beans)
+            beans = sem_beans.head(top_k_beans * 2)
+
+        # Post-filter: prioritize beans matching critical entities (origin, roast),
+        # then pad with remaining results if needed.
+        if has_filters and intent in ("product_search", "similar_search"):
+            beans = _prioritize_matching(beans, entities, top_k_beans)
+        else:
+            beans = beans.head(top_k_beans)
 
         return {
             "intent": intent,
