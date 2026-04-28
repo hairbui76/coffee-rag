@@ -6,33 +6,56 @@ Tài liệu chi tiết về cách đánh giá hệ thống Coffee RAG bằng fra
 
 ## Mục lục
 
-- [Tổng quan](#tổng-quan)
-- [Kiến trúc evaluation](#kiến-trúc-evaluation)
-- [RAGAS metrics](#ragas-metrics)
-  - [Context Precision](#context-precision)
-  - [Context Recall](#context-recall)
-  - [Faithfulness](#faithfulness)
-  - [Answer Relevancy](#answer-relevancy)
-- [Evaluation dataset](#evaluation-dataset)
-  - [Schema](#schema)
-  - [Intent distribution](#intent-distribution)
-  - [Cách generate dataset](#cách-generate-dataset)
-- [Evaluation pipeline](#evaluation-pipeline)
-  - [Luồng xử lý 1 case](#luồng-xử-lý-1-case)
-  - [Intent-aware metric selection](#intent-aware-metric-selection)
-  - [Early stopping](#early-stopping)
-  - [Context formatting](#context-formatting)
-- [Hướng dẫn sử dụng](#hướng-dẫn-sử-dụng)
-  - [Generate dataset](#generate-dataset)
-  - [Chạy evaluation](#chạy-evaluation)
-  - [Validate dataset](#validate-dataset)
-  - [Debug cases](#debug-cases)
-- [Phân tích kết quả](#phân-tích-kết-quả)
-  - [Output files](#output-files)
-  - [Đọc kết quả CSV](#đọc-kết-quả-csv)
-  - [EDA notebook](#eda-notebook)
-- [Các vấn đề đã biết và giải pháp](#các-vấn-đề-đã-biết-và-giải-pháp)
-- [Cấu hình](#cấu-hình)
+- [Evaluation — RAGAS cho Coffee RAG](#evaluation--ragas-cho-coffee-rag)
+  - [Mục lục](#mục-lục)
+  - [Tổng quan](#tổng-quan)
+  - [Kiến trúc evaluation](#kiến-trúc-evaluation)
+  - [RAGAS metrics](#ragas-metrics)
+    - [Context Precision](#context-precision)
+    - [Context Recall](#context-recall)
+    - [Faithfulness](#faithfulness)
+    - [Answer Relevancy](#answer-relevancy)
+  - [Evaluation dataset](#evaluation-dataset)
+    - [Schema](#schema)
+    - [Intent distribution](#intent-distribution)
+    - [Cách generate dataset](#cách-generate-dataset)
+  - [Evaluation pipeline](#evaluation-pipeline)
+    - [Luồng xử lý 1 case](#luồng-xử-lý-1-case)
+    - [Intent-aware metric selection](#intent-aware-metric-selection)
+    - [Early stopping](#early-stopping)
+    - [Context formatting](#context-formatting)
+  - [Post-RRF Prioritization](#post-rrf-prioritization)
+    - [Vấn đề cần giải quyết](#vấn-đề-cần-giải-quyết)
+    - [Cơ chế hoạt động](#cơ-chế-hoạt-động)
+    - [Tại sao over-fetch 2× trước khi prioritize?](#tại-sao-over-fetch-2-trước-khi-prioritize)
+    - [Tại sao chỉ check origin + roast, không check flavor?](#tại-sao-chỉ-check-origin--roast-không-check-flavor)
+    - [Giới hạn và edge cases](#giới-hạn-và-edge-cases)
+    - [Code tham khảo](#code-tham-khảo)
+  - [Hướng dẫn sử dụng](#hướng-dẫn-sử-dụng)
+    - [Generate dataset](#generate-dataset)
+    - [Chạy evaluation](#chạy-evaluation)
+      - [Mode retrieval (chỉ context metrics, nhanh)](#mode-retrieval-chỉ-context-metrics-nhanh)
+      - [Mode full (tất cả metrics, cần LLM generate response)](#mode-full-tất-cả-metrics-cần-llm-generate-response)
+      - [Resume (chạy tiếp từ lần trước)](#resume-chạy-tiếp-từ-lần-trước)
+      - [Tất cả arguments](#tất-cả-arguments)
+    - [Validate dataset](#validate-dataset)
+    - [Debug cases](#debug-cases)
+  - [Phân tích kết quả](#phân-tích-kết-quả)
+    - [Output files](#output-files)
+    - [Đọc kết quả CSV](#đọc-kết-quả-csv)
+    - [Ý nghĩa các cột CSV](#ý-nghĩa-các-cột-csv)
+    - [EDA notebook](#eda-notebook)
+  - [Các vấn đề đã biết và giải pháp](#các-vấn-đề-đã-biết-và-giải-pháp)
+    - [1. Context Recall thấp cho product\_search / similar\_search](#1-context-recall-thấp-cho-product_search--similar_search)
+    - [2. Response null ở mode retrieval](#2-response-null-ở-mode-retrieval)
+    - [3. numpy.ndarray vs list trong filter](#3-numpyndarray-vs-list-trong-filter)
+    - [4. Roast normalization](#4-roast-normalization)
+    - [5. Non-retrieval intents luôn CP=CR=0](#5-non-retrieval-intents-luôn-cpcr0)
+    - [6. Fabricated ground\_truth\_contexts](#6-fabricated-ground_truth_contexts)
+  - [Cấu hình](#cấu-hình)
+    - [Biến môi trường (.env)](#biến-môi-trường-env)
+    - [Constants trong ragas\_eval.py](#constants-trong-ragas_evalpy)
+    - [Costs ước tính](#costs-ước-tính)
 
 ---
 
@@ -40,11 +63,11 @@ Tài liệu chi tiết về cách đánh giá hệ thống Coffee RAG bằng fra
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│   generate_      │     │   ragas_eval.py   │     │   EDA / phân     │
-│   dataset.py     │────▶│                  │────▶│   tích kết quả   │
-│                  │     │   Chấm điểm từng │     │                  │
-│   Tạo bộ câu hỏi│     │   case bằng RAGAS │     │   CSV, notebook  │
-│   + ground truth │     │   metrics         │     │   biểu đồ        │
+│   generate_      │     │  ragas_eval.py   │     │   EDA / phân     │
+│   dataset.py     │───▶│                  │────▶│   tích kết quả   │
+│                  │     │  Chấm điểm từng  │     │                  │
+│   Tạo bộ câu hỏi │     │  case bằng RAGAS │     │   CSV, notebook  │
+│   + ground truth │     │  metrics         │     │   biểu đồ        │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
@@ -61,18 +84,17 @@ Tài liệu chi tiết về cách đánh giá hệ thống Coffee RAG bằng fra
 ```
                     Evaluation Dataset (JSON)
                     ┌─────────────────────────────────┐
-                    │ { question, ground_truth,        │
-                    │   ground_truth_contexts,         │
-                    │   intent, difficulty, language }  │
+                    │ { question, ground_truth,       │
+                    │   ground_truth_contexts,        │
+                    │   intent, difficulty, language }│
                     └───────────────┬─────────────────┘
                                     │
                         ┌───────────▼───────────┐
                         │                       │
-                  ┌─────▼──────┐         ┌──────▼──────┐
-                  │  question   │         │  ground_    │
-                  │             │         │  truth      │
-                  └─────┬──────┘         │  (reference)│
-                        │                └──────┬──────┘
+                  ┌─────▼──────┐         ┌──────▼────────┐
+                  │  question  │         │  ground_truth │
+                  └─────┬──────┘         │   (reference) │
+                        │                └──────┬────────┘
                         ▼                       │
               ┌─────────────────┐               │
               │  CoffeeRAG      │               │
@@ -93,23 +115,23 @@ Tài liệu chi tiết về cách đánh giá hệ thống Coffee RAG bằng fra
               └────────┬────────┘               │
                        │                        │
                        ▼                        ▼
-              ┌─────────────────────────────────────┐
-              │         RAGAS Metrics                │
-              │                                     │
-              │  context_precision(question,         │
-              │                   reference,         │
-              │                   retrieved_contexts)│
-              │                                     │
+              ┌───────────────────────────────────────┐
+              │         RAGAS Metrics                 │
+              │                                       │
+              │  context_precision(question,          │
+              │                   reference,          │
+              │                   retrieved_contexts) │
+              │                                       │
               │  context_recall(question,             │
               │                reference,             │
               │                retrieved_contexts)    │
-              │                                     │
+              │                                       │
               │  faithfulness(question,               │
               │              response,                │
               │              retrieved_contexts)      │
-              │                                     │
+              │                                       │
               │  answer_relevancy(question, response) │
-              └─────────────────┬───────────────────┘
+              └─────────────────┬─────────────────────┘
                                 │
                                 ▼
                        Scores (0.0 — 1.0)
@@ -451,25 +473,25 @@ RRF (Reciprocal Rank Fusion) merge **semantic search** + **structured filter** t
                │ ...              │
                └────────┬─────────┘
                         │
-               ┌────────▼──────────────────────────┐
+               ┌────────▼───────────────────────────┐
                │   _prioritize_matching()           │
-               │                                   │
-               │  Score mỗi bean (0-2):            │
-               │    +1 nếu origin match (Colombia) │
-               │    +1 nếu roast match (Medium)    │
-               │                                   │
+               │                                    │
+               │  Score mỗi bean (0-2):             │
+               │    +1 nếu origin match (Colombia)  │
+               │    +1 nếu roast match (Medium)     │
+               │                                    │
                │  #1 Col Med Choc  → score=2  ✅✅ │
                │  #3 Col Med Nut   → score=2  ✅✅ │
                │  #6 Col Med Fruit → score=2  ✅✅ │
                │  #5 Col Drk Choc  → score=1  ✅❌ │  origin✓ roast✗
                │  #2 Eth Med Choc  → score=1  ❌✅ │  origin✗ roast✓
-               │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+               │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
                │  #4 Bra Med Choc  → score=0  ❌❌ │  ← CẮT BỎ
-               │  #7 ...           → score=0       │  ← CẮT BỎ
-               │                                   │
-               │  Sort: score DESC → rank ASC      │
-               │  Take top-5                       │
-               └────────┬──────────────────────────┘
+               │  #7 ...           → score=0        │  ← CẮT BỎ
+               │                                    │
+               │  Sort: score DESC → rank ASC       │
+               │  Take top-5                        │
+               └────────┬───────────────────────────┘
                         │
                    Final 5 beans
                    (3×score=2 → 2×score=1)

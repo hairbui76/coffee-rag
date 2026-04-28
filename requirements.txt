@@ -9,5 +9,5 @@ pyarrow>=14.0
 torchvision>=0.26.0
 python-dotenv>=1.2.2
 ragas>=0.4.3
-matplotlib
-seaborn
+matplotlib>=3.10.9
+seaborn>=0.3.12
