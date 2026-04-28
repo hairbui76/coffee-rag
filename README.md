@@ -4,20 +4,41 @@ A **Retrieval-Augmented Generation (RAG)** chatbot that recommends specialty cof
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [System Components](#system-components)
-  - [M1: Query Understanding](#m1-query-understanding)
-  - [M2A: Structured Filter](#m2a-structured-filter)
-  - [M2B: Semantic Retrieval](#m2b-semantic-retrieval)
-  - [M2C: Product Name Matching](#m2c-product-name-matching)
-  - [M3: Re-Ranking & Fusion](#m3-re-ranking--fusion)
-  - [M4: Response Generation](#m4-response-generation)
-- [Data Pipeline](#data-pipeline)
-- [Evaluation](#evaluation)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Setup & Usage](#setup--usage)
+- [☕ Coffee Advisor — Specialty Coffee RAG System](#-coffee-advisor--specialty-coffee-rag-system)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+    - [Supported Query Types](#supported-query-types)
+    - [Input / Output](#input--output)
+  - [Architecture](#architecture)
+  - [System Components](#system-components)
+    - [M1: Query Understanding](#m1-query-understanding)
+    - [M2A: Structured Filter](#m2a-structured-filter)
+    - [M2B: Semantic Retrieval](#m2b-semantic-retrieval)
+    - [M2C: Product Name Matching](#m2c-product-name-matching)
+    - [M3: Re-Ranking \& Fusion](#m3-re-ranking--fusion)
+    - [M4: Response Generation](#m4-response-generation)
+  - [Data Pipeline](#data-pipeline)
+    - [Raw Data](#raw-data)
+    - [Preprocessing](#preprocessing)
+    - [Embeddings (`src/preprocessing/build_embeddings.py`)](#embeddings-srcpreprocessingbuild_embeddingspy)
+  - [Evaluation](#evaluation)
+    - [Framework: RAGAS](#framework-ragas)
+    - [Evaluation Dataset](#evaluation-dataset)
+    - [Running Evaluation](#running-evaluation)
+  - [Tech Stack](#tech-stack)
+  - [Project Structure](#project-structure)
+  - [Setup \& Usage](#setup--usage)
+    - [Prerequisites](#prerequisites)
+    - [Installation](#installation)
+    - [Configuration](#configuration)
+    - [Data Preprocessing (if starting from scratch)](#data-preprocessing-if-starting-from-scratch)
+    - [Run Chatbot](#run-chatbot)
+    - [Run Evaluation](#run-evaluation)
+  - [Key Algorithms](#key-algorithms)
+    - [Reciprocal Rank Fusion (RRF)](#reciprocal-rank-fusion-rrf)
+    - [Hybrid Retrieval Strategy](#hybrid-retrieval-strategy)
+    - [Progressive Filter Relaxation](#progressive-filter-relaxation)
+  - [License](#license)
 
 ---
 
@@ -66,7 +87,7 @@ OUTPUT: {
                          └──────┬───────┘
                                 │
                                 ▼
-                 ┌──────────────────────────────┐
+                 ┌───────────────────────────────┐
                  │   M1: Query Understanding     │
                  │                               │
                  │  ┌─────────────┐ ┌──────────┐ │
@@ -84,15 +105,15 @@ OUTPUT: {
 │ Filter      │  │ Search       │  │ Matching      │  │ Search   │
 │ (metadata)  │  │ (FAISS)      │  │ (fuzzy)       │  │ (FAISS)  │
 └──────┬──────┘  └──────┬───────┘  └───────┬───────┘  └────┬─────┘
-       │                │                  │                │
-       └────────────────┼──────────────────┘                │
-                        ▼                                   │
-              ┌──────────────────┐                          │
-              │ M3: RRF Fusion   │                          │
-              │ (re-rank beans)  │                          │
-              └────────┬─────────┘                          │
-                       │                                    │
-                       ▼                                    ▼
+       │                │                  │               │
+       └────────────────┼──────────────────┘               │
+                        ▼                                  │
+              ┌──────────────────┐                         │
+              │ M3: RRF Fusion   │                         │
+              │ (re-rank beans)  │                         │
+              └────────┬─────────┘                         │
+                       │                                   │
+                       ▼                                   ▼
               ┌──────────────────────────────────────────────┐
               │   M4: Response Generation                    │
               │                                              │
