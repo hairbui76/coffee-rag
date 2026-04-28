@@ -1,5 +1,7 @@
 """Full RAG pipeline: Query → Understand → Retrieve → Re-rank → Generate."""
 
+import os
+
 import numpy as np
 
 from src.query.intent_classifier import classify_intent
@@ -19,7 +21,11 @@ class CoffeeRAG:
         self.llm_client = get_client()
         self._bean_vecs = np.load(self.searcher._emb_dir / "beans_embeddings.npy")
 
-    def retrieve(self, query: str, top_k_beans: int = 10, top_k_news: int = 5):
+    def retrieve(self, query: str,
+                 top_k_beans: int | None = None,
+                 top_k_news: int | None = None):
+        top_k_beans = top_k_beans or int(os.getenv("TOP_K_BEANS", "5"))
+        top_k_news = top_k_news or int(os.getenv("TOP_K_NEWS", "5"))
         intent = classify_intent(query)
         entities = extract_entities(query, client=self.llm_client)
 

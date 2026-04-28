@@ -489,7 +489,7 @@ async def _resolve_spec(
     question = await _llm_generate(client, model, QUESTION_SYSTEM, q_prompt, sem)
 
     # ── Phase 3: Retrieve actual contexts ────────────────────────
-    ctx = await asyncio.to_thread(rag.retrieve, question, 10, 5)
+    ctx = await asyncio.to_thread(rag.retrieve, question, 5, 5)
     retrieved_beans = ctx.get("beans")
     retrieved_news = ctx.get("news")
 

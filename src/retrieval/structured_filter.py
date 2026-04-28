@@ -72,14 +72,15 @@ def structured_filter(beans_df: pd.DataFrame, entities: dict) -> pd.DataFrame:
          "typology": "Arabica", "processing": "Washed"}
 
     If strict AND filtering returns fewer than MIN_RESULTS, progressively
-    relax by dropping the least important filter (processing → typology →
-    roast) until enough results are found.
+    relax by dropping the least important filter (processing → typology)
+    until enough results are found. Roast and origin are never relaxed
+    because they are critical user constraints.
     """
     result = _apply_filters(beans_df, entities)
     if len(result) >= MIN_RESULTS:
         return result
 
-    relaxation_order = ["processing", "typology", "roast"]
+    relaxation_order = ["processing", "typology"]
     skipped: set[str] = set()
     for field in relaxation_order:
         if not entities.get(field):

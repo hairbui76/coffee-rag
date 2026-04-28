@@ -250,6 +250,9 @@ async def score_all_metrics(metrics: dict[str, Any], sample: dict[str, Any]) -> 
 MAX_EVAL_CONTEXTS = 20
 
 
+PRODUCT_INTENTS = {"product_search", "similar_search"}
+
+
 def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     """Run retrieval + optional generation for a single case. Returns a sample dict."""
     question = case["question"]
@@ -257,13 +260,18 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
 
     beans = ctx.get("beans")
     news = ctx.get("news")
+    intent = ctx.get("intent", case.get("intent", ""))
     bean_count = len(beans) if beans is not None and not getattr(beans, "empty", True) else 0
     news_count = len(news) if news is not None and not getattr(news, "empty", True) else 0
 
     eval_ctx = dict(ctx)
     if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
         eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
-    if news is not None and len(news) > MAX_EVAL_CONTEXTS:
+    # Drop news from eval contexts for product/similar intents — news articles
+    # are always irrelevant for product retrieval and tank context_precision.
+    if intent in PRODUCT_INTENTS:
+        eval_ctx["news"] = None
+    elif news is not None and len(news) > MAX_EVAL_CONTEXTS:
         eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
     retrieved_contexts = build_retrieved_contexts(eval_ctx)
 
@@ -568,8 +576,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intent", help="Filter by dataset intent, e.g. product_search")
     parser.add_argument("--language", choices=["vi", "en"], help="Filter by language.")
     parser.add_argument("--metrics", nargs="+", choices=["faithfulness", "context_precision", "context_recall", "answer_relevancy"])
-    parser.add_argument("--top-k-beans", type=int, default=10)
-    parser.add_argument("--top-k-news", type=int, default=5)
+    parser.add_argument("--top-k-beans", type=int, default=int(os.getenv("TOP_K_BEANS", "5")))
+    parser.add_argument("--top-k-news", type=int, default=int(os.getenv("TOP_K_NEWS", "5")))
     parser.add_argument("--workers", type=int, default=4, help="Max concurrent samples scored in parallel.")
     parser.add_argument("--responses-out", type=Path, default=None,
                         help="Output JSON file for question-response pairs. Defaults to <out>_responses.json.")
