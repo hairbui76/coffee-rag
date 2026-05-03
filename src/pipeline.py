@@ -86,7 +86,15 @@ class CoffeeRAG:
         roaster_name = entities.get("roaster")
 
         sem_beans = self.searcher.search_beans(query, top_k=top_k_beans * 3)
-        sem_news = self.searcher.search_news(query, top_k=top_k_news)
+        news_candidate_k = top_k_news * 3
+        sem_news = self.searcher.search_news(query, top_k=news_candidate_k)
+        if use_rrf:
+            bm25_news = self.searcher.search_news_bm25(query, top_k=news_candidate_k)
+            news_lists = [sem_news, bm25_news] if not bm25_news.empty else [sem_news]
+            if len(news_lists) > 1:
+                sem_news = reciprocal_rank_fusion(
+                    *news_lists, id_col="_chunk_id", top_k=news_candidate_k,
+                )
 
         product_match = None
         if product_name:
@@ -136,7 +144,7 @@ class CoffeeRAG:
             "intent": intent,
             "entities": entities,
             "beans": beans,
-            "news": sem_news if intent in ("news_search", "knowledge_qa") else sem_news.head(2),
+            "news": sem_news.head(top_k_news) if intent in ("news_search", "knowledge_qa") else sem_news.head(2),
         }
 
     def ask(self, query: str) -> CoffeeResponse:

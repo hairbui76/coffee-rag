@@ -31,21 +31,28 @@ INTENT_PRIORITY = [
         r"tin tức|news|thị trường|market|trend|xu hướng|latest|mới nhất",
     ]),
     ("product_search", [
-        r"tìm|gợi ý|recommend|suggest|cho tôi|give me|looking for|find|giới thiệu",
+        r"tìm|gợi ý|recommend|suggest|give me|looking for|find|giới thiệu",
         r"cà phê có vị|coffee with|cà phê.*rang|want.*coffee",
         r"pha (filter|espresso|pour.?over|drip)",
     ]),
     ("knowledge_qa", [
         r"là gì|what is|how (does|do|to)|tại sao|why|explain|giải thích",
         r"phương pháp|method",
+        r"cho (tôi|mình) biết|tell me (more )?about|biết thêm về",
     ]),
 ]
 
 
 def classify_intent(query: str) -> str:
+    """Classify by keyword rules. Default fallback is knowledge_qa: queries
+    with no product/news/comparison markers are most likely informational
+    questions, not implicit product requests. The previous fallback to
+    product_search caused news/info queries (e.g. "Cho tôi biết về thỏa
+    thuận EU-Anh") to be misrouted, dropping news contexts from retrieval.
+    """
     q = query.lower().strip()
     for intent, patterns in INTENT_PRIORITY:
         for pat in patterns:
             if re.search(pat, q):
                 return intent
-    return "product_search"
+    return "knowledge_qa"

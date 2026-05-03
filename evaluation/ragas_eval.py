@@ -302,18 +302,23 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
 
     beans = ctx.get("beans")
     news = ctx.get("news")
-    intent = ctx.get("intent", case.get("intent", ""))
+    pipeline_intent = ctx.get("intent", "")
+    case_intent = case.get("intent", "") or pipeline_intent
     bean_count = len(beans) if beans is not None and not getattr(beans, "empty", True) else 0
     news_count = len(news) if news is not None and not getattr(news, "empty", True) else 0
 
     eval_ctx = dict(ctx)
     # Drop irrelevant context type per intent to avoid noise in CP scoring.
-    if intent in PRODUCT_INTENTS:
+    # Route by CASE intent (dataset label = ground truth), not pipeline intent —
+    # this keeps eval honest when the classifier mislabels (e.g. NS query
+    # misrouted to product_search would otherwise have its news contexts
+    # dropped before scoring).
+    if case_intent in PRODUCT_INTENTS:
         # News articles are always irrelevant for product retrieval.
         eval_ctx["news"] = None
         if beans is not None and len(beans) > MAX_EVAL_CONTEXTS:
             eval_ctx["beans"] = beans.head(MAX_EVAL_CONTEXTS)
-    elif intent in NEWS_INTENTS:
+    elif case_intent in NEWS_INTENTS:
         # Bean contexts are irrelevant for news queries.
         eval_ctx["beans"] = None
         if news is not None and len(news) > MAX_EVAL_CONTEXTS:
