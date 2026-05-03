@@ -297,7 +297,8 @@ NEWS_INTENTS = {"news_search"}
 def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     """Run retrieval + optional generation for a single case. Returns a sample dict."""
     question = case["question"]
-    ctx = rag.retrieve(question, top_k_beans=args.top_k_beans, top_k_news=args.top_k_news)
+    ctx = rag.retrieve(question, top_k_beans=args.top_k_beans, top_k_news=args.top_k_news,
+                       use_rrf=args.use_rrf)
 
     beans = ctx.get("beans")
     news = ctx.get("news")
@@ -643,6 +644,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics", nargs="+", choices=["faithfulness", "context_precision", "context_recall", "answer_relevancy"])
     parser.add_argument("--top-k-beans", type=int, default=int(os.getenv("TOP_K_BEANS", "5")))
     parser.add_argument("--top-k-news", type=int, default=int(os.getenv("TOP_K_NEWS", "5")))
+    parser.add_argument("--use-rrf", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable Reciprocal Rank Fusion when merging candidate lists. "
+                             "Use --no-use-rrf to fall back to priority-order concat + dedupe "
+                             "(same candidate sources, no RRF).")
     parser.add_argument("--workers", type=int, default=4, help="Max concurrent samples scored in parallel.")
     parser.add_argument("--responses-out", type=Path, default=None,
                         help="Output JSON file for question-response pairs. Defaults to <out>_responses.json.")

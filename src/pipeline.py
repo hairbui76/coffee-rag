@@ -57,7 +57,8 @@ class CoffeeRAG:
 
     def retrieve(self, query: str,
                  top_k_beans: int | None = None,
-                 top_k_news: int | None = None):
+                 top_k_news: int | None = None,
+                 use_rrf: bool = True):
         top_k_beans = top_k_beans or int(os.getenv("TOP_K_BEANS", "5"))
         top_k_news = top_k_news or int(os.getenv("TOP_K_NEWS", "5"))
         intent = classify_intent(query)
@@ -114,7 +115,13 @@ class CoffeeRAG:
             result_lists.append(struct_beans)
 
         if len(result_lists) > 1:
-            beans = reciprocal_rank_fusion(*result_lists, top_k=top_k_beans * 2)
+            if use_rrf:
+                beans = reciprocal_rank_fusion(*result_lists, top_k=top_k_beans * 2)
+            else:
+                beans = pd.concat(result_lists, ignore_index=True) \
+                          .drop_duplicates(subset="product_url", keep="first") \
+                          .head(top_k_beans * 2) \
+                          .reset_index(drop=True)
         else:
             beans = sem_beans.head(top_k_beans * 2)
 
