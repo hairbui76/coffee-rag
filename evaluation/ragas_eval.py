@@ -3,7 +3,7 @@
 Example:
     python -m evaluation.ragas_eval --limit 5
     python -m evaluation.ragas_eval --mode retrieval --limit 20 --intent product_search
-    python -m evaluation.ragas_eval --mode retrieval --metrics context_precision retrieval_recall_soft --limit 10
+    python -m evaluation.ragas_eval --mode retrieval --soft --limit 10
     python -m evaluation.ragas_eval --mode retrieval --limit 50 --workers 8 --verbose
 """
 
@@ -54,21 +54,13 @@ from src.pipeline import CoffeeRAG  # noqa: E402
 
 
 DEFAULT_METRICS = {
-    # Ragas ContextRecall is still available as --metrics context_recall, but it
-    # is a strict answer-support metric, not a document-retrieval recall metric.
-    "full": [
-        "faithfulness",
-        "context_precision",
-        "retrieval_recall_soft",
-        "context_recall_soft",
-        "answer_relevancy",
-    ],
-    "retrieval": ["context_precision", "retrieval_recall_soft", "context_recall_soft"],
+    "full": ["faithfulness", "context_precision", "context_recall", "answer_relevancy"],
+    "retrieval": ["context_precision", "context_recall"],
 }
 
 RETRIEVAL_INTENTS = {"product_search", "similar_search", "news_search"}
 CONTEXT_METRICS = {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
-OPENAI_LLM_METRICS = {"faithfulness", "context_precision", "context_recall", "answer_relevancy"}
+OPENAI_LLM_METRICS = {"faithfulness", "context_precision", "answer_relevancy"}
 SOFT_EMBEDDING_METRICS = {"context_recall_soft", "retrieval_recall_soft"}
 
 
@@ -85,11 +77,21 @@ def _metrics_for_intent(intent: str, all_metrics: dict[str, Any]) -> dict[str, A
     return {k: v for k, v in all_metrics.items() if k not in CONTEXT_METRICS}
 
 
-def _uses_openai(metric_names: list[str], embedding_model: str, ar_embedding_model: str | None) -> bool:
+def _uses_openai(
+    metric_names: list[str],
+    embedding_model: str,
+    ar_embedding_model: str | None,
+    soft_recall: bool,
+) -> bool:
     if any(name in OPENAI_LLM_METRICS for name in metric_names):
         return True
 
-    if any(name in SOFT_EMBEDDING_METRICS for name in metric_names):
+    if "context_recall" in metric_names and not soft_recall:
+        return True
+
+    if any(name in SOFT_EMBEDDING_METRICS for name in metric_names) or (
+        "context_recall" in metric_names and soft_recall
+    ):
         model = ar_embedding_model or embedding_model
         return "/" not in model
 
@@ -408,8 +410,13 @@ def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, l
     return cases
 
 
-def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
-                  ar_embedding_model: str | None = None):
+def build_metrics(
+    names: list[str],
+    evaluator_model: str,
+    embedding_model: str,
+    ar_embedding_model: str | None = None,
+    soft_recall: bool = False,
+):
     client = None
     llm = None
     embeddings = None
@@ -436,6 +443,7 @@ def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
         "answer_relevancy" in names
         or "context_recall_soft" in names
         or "retrieval_recall_soft" in names
+        or ("context_recall" in names and soft_recall)
     )
     if need_ar_model:
         if ar_embedding_model and ar_embedding_model != embedding_model:
@@ -458,7 +466,11 @@ def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
     if "context_precision" in names:
         available["context_precision"] = ContextPrecision(llm=get_llm())
     if "context_recall" in names:
-        available["context_recall"] = ContextRecall(llm=get_llm())
+        available["context_recall"] = (
+            SoftRetrievalRecall(ar_embeddings)
+            if soft_recall
+            else ContextRecall(llm=get_llm())
+        )
     if "answer_relevancy" in names:
         ar_metric = AnswerRelevancy(llm=get_llm(), embeddings=ar_embeddings)
         # Patch prompt to force same-language reverse-question generation.
@@ -492,11 +504,18 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
             retrieved_contexts=sample["retrieved_contexts"],
         )
     elif metric_name == "context_recall":
-        result = await metric.ascore(
-            user_input=sample["question"],
-            reference=sample["reference"],
-            retrieved_contexts=sample["retrieved_contexts"],
-        )
+        if isinstance(metric, SoftRetrievalRecall):
+            result = await metric.ascore(
+                user_input=sample["question"],
+                reference_contexts=sample["reference_contexts"],
+                retrieved_contexts=sample["retrieved_contexts"],
+            )
+        else:
+            result = await metric.ascore(
+                user_input=sample["question"],
+                reference=sample["reference"],
+                retrieved_contexts=sample["retrieved_contexts"],
+            )
     elif metric_name == "context_recall_soft":
         result = await metric.ascore(
             user_input=sample["question"],
@@ -697,7 +716,7 @@ def log_sample(
 # ── Main eval loop ────────────────────────────────────────────
 
 async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
-    metric_names = args.metrics or DEFAULT_METRICS[args.mode]
+    metric_names = list(args.metrics or DEFAULT_METRICS[args.mode])
     unsupported = sorted(set(metric_names) - {
         "faithfulness",
         "context_precision",
@@ -715,7 +734,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
             if name in {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
         ]
 
-    if _uses_openai(metric_names, args.embedding_model, args.ar_embedding_model) and not os.environ.get("OPENAI_API_KEY"):
+    if _uses_openai(metric_names, args.embedding_model, args.ar_embedding_model, args.soft) and not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is required for selected Ragas/OpenAI-backed metrics.")
 
     skip_ids = load_existing_ids(args.out) if args.limit == 0 else None
@@ -724,8 +743,13 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
         print("No cases matched filters.")
         return []
 
-    metrics = build_metrics(metric_names, args.evaluator_model, args.embedding_model,
-                             ar_embedding_model=args.ar_embedding_model)
+    metrics = build_metrics(
+        metric_names,
+        args.evaluator_model,
+        args.embedding_model,
+        ar_embedding_model=args.ar_embedding_model,
+        soft_recall=args.soft,
+    )
     rag = CoffeeRAG()
     total = len(cases)
     stats = RunningStats()
@@ -741,6 +765,8 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     print(f"\n{'=' * 60}")
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
+    if args.soft and "context_recall" in metric_names:
+        print("  soft recall: context_recall uses retrieval_recall_soft implementation")
     print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
     print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
     early_stop_enabled = (
@@ -977,6 +1003,8 @@ def parse_args() -> argparse.Namespace:
         "retrieval_recall_soft",
         "answer_relevancy",
     ])
+    parser.add_argument("--soft", action="store_true",
+                        help="Replace strict Ragas context_recall with retrieval_recall_soft.")
     parser.add_argument("--top-k-beans", type=int, default=int(os.getenv("TOP_K_BEANS", "5")))
     parser.add_argument("--top-k-news", type=int, default=int(os.getenv("TOP_K_NEWS", "5")))
     parser.add_argument("--use-rrf", action=argparse.BooleanOptionalAction, default=True,
