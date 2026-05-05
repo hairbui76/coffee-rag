@@ -303,53 +303,81 @@ METRIC_DISPLAY = {
 
 
 def plot_dist_by_intent(df: pd.DataFrame, metrics: list[str], out: Path) -> int:
-    """Generate one score-distribution chart per metric, split by intent (PS / SM / NS).
+    """Generate score-distribution charts per metric, split by intent (PS / SM / NS).
 
-    Each chart is an overlaid histogram with 3 colours.
-    Returns the number of charts saved.
+    Two styles per metric:
+      - 10a: KDE density curves (smooth lines, easy shape comparison)
+      - 10b: Grouped bars (side-by-side, easy count reading)
+
+    Returns the number of chart files saved.
     """
     if "intent" not in df.columns:
         return 0
 
+    intents = [k for k in ("product_search", "similar_search", "news_search")
+               if k in df["intent"].values]
+    if not intents:
+        return 0
+
     saved = 0
-    bins = np.linspace(0, 1, 21)  # 0.00, 0.05, … 1.00
+    bins = np.linspace(0, 1, 11)  # 0.0, 0.1, … 1.0
 
     for metric in metrics:
+        # ── 10a: KDE lines ──
         fig, ax = plt.subplots(figsize=(8, 5))
         has_data = False
-
-        for intent_key in ("product_search", "similar_search", "news_search"):
-            vals = df.loc[
-                (df["intent"] == intent_key) & df[metric].notna(), metric
-            ]
+        for intent_key in intents:
+            vals = df.loc[(df["intent"] == intent_key) & df[metric].notna(), metric]
             if vals.empty:
                 continue
             has_data = True
-            label = (
-                f"{INTENT_LABELS.get(intent_key, intent_key)}  "
-                f"(n={len(vals)}, avg={vals.mean():.3f})"
-            )
-            ax.hist(
-                vals, bins=bins, alpha=0.55, label=label,
-                color=INTENT_COLORS.get(intent_key, "#999999"),
-                edgecolor="white", linewidth=0.5,
-            )
-
-        if not has_data:
-            plt.close(fig)
-            continue
-
-        display = METRIC_DISPLAY.get(metric, metric.replace("_", " ").title())
-        ax.set_title(f"Score Distribution — {display}", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Score", fontsize=11)
-        ax.set_ylabel("Count", fontsize=11)
-        ax.set_xlim(-0.02, 1.02)
-        ax.legend(fontsize=9, loc="upper left")
-        ax.grid(axis="y", alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(out / f"10_dist_by_intent_{metric}.png", dpi=150, bbox_inches="tight")
+            label = (f"{INTENT_LABELS.get(intent_key, intent_key)}  "
+                     f"(n={len(vals)}, avg={vals.mean():.3f})")
+            sns.kdeplot(vals, ax=ax, color=INTENT_COLORS.get(intent_key, "#999"),
+                        linewidth=2.5, label=label, clip=(0, 1), fill=True, alpha=0.15)
+        if has_data:
+            display = METRIC_DISPLAY.get(metric, metric.replace("_", " ").title())
+            ax.set_title(f"Score Distribution — {display}", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Score", fontsize=11)
+            ax.set_ylabel("Density", fontsize=11)
+            ax.set_xlim(-0.02, 1.02)
+            ax.legend(fontsize=9, loc="upper left")
+            ax.grid(axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(out / f"10a_kde_{metric}.png", dpi=150, bbox_inches="tight")
+            saved += 1
         plt.close(fig)
-        saved += 1
+
+        # ── 10b: Grouped bars ──
+        fig, ax = plt.subplots(figsize=(9, 5))
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        width = 0.8 / len(intents)  # bar width per intent
+        has_data = False
+        for i, intent_key in enumerate(intents):
+            vals = df.loc[(df["intent"] == intent_key) & df[metric].notna(), metric]
+            if vals.empty:
+                continue
+            has_data = True
+            counts, _ = np.histogram(vals, bins=bins)
+            offset = (i - len(intents) / 2 + 0.5) * width
+            label = (f"{INTENT_LABELS.get(intent_key, intent_key)}  "
+                     f"(n={len(vals)}, avg={vals.mean():.3f})")
+            ax.bar(bin_centers + offset, counts, width=width, label=label,
+                   color=INTENT_COLORS.get(intent_key, "#999"), edgecolor="white", linewidth=0.5)
+        if has_data:
+            display = METRIC_DISPLAY.get(metric, metric.replace("_", " ").title())
+            ax.set_title(f"Score Distribution — {display}", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Score", fontsize=11)
+            ax.set_ylabel("Count", fontsize=11)
+            ax.set_xlim(-0.05, 1.05)
+            ax.set_xticks(bin_centers)
+            ax.set_xticklabels([f"{v:.1f}" for v in bin_centers], fontsize=9)
+            ax.legend(fontsize=9, loc="upper left")
+            ax.grid(axis="y", alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(out / f"10b_grouped_{metric}.png", dpi=150, bbox_inches="tight")
+            saved += 1
+        plt.close(fig)
 
     return saved
 
