@@ -280,6 +280,80 @@ def plot_heatmap(df: pd.DataFrame, metrics: list[str], out: Path):
     plt.close(fig)
 
 
+# ── 10. Score distribution by intent (1 chart per metric) ───
+
+INTENT_LABELS = {
+    "product_search": "PS (Product Search)",
+    "similar_search": "SM (Similar Search)",
+    "news_search": "NS (News Search)",
+}
+
+INTENT_COLORS = {
+    "product_search": "#2196F3",   # blue
+    "similar_search": "#FF9800",   # orange
+    "news_search": "#4CAF50",     # green
+}
+
+METRIC_DISPLAY = {
+    "faithfulness": "Faithfulness",
+    "context_precision": "Context Precision",
+    "context_recall": "Context Recall",
+    "answer_relevancy": "Answer Relevancy",
+}
+
+
+def plot_dist_by_intent(df: pd.DataFrame, metrics: list[str], out: Path) -> int:
+    """Generate one score-distribution chart per metric, split by intent (PS / SM / NS).
+
+    Each chart is an overlaid histogram with 3 colours.
+    Returns the number of charts saved.
+    """
+    if "intent" not in df.columns:
+        return 0
+
+    saved = 0
+    bins = np.linspace(0, 1, 21)  # 0.00, 0.05, … 1.00
+
+    for metric in metrics:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        has_data = False
+
+        for intent_key in ("product_search", "similar_search", "news_search"):
+            vals = df.loc[
+                (df["intent"] == intent_key) & df[metric].notna(), metric
+            ]
+            if vals.empty:
+                continue
+            has_data = True
+            label = (
+                f"{INTENT_LABELS.get(intent_key, intent_key)}  "
+                f"(n={len(vals)}, avg={vals.mean():.3f})"
+            )
+            ax.hist(
+                vals, bins=bins, alpha=0.55, label=label,
+                color=INTENT_COLORS.get(intent_key, "#999999"),
+                edgecolor="white", linewidth=0.5,
+            )
+
+        if not has_data:
+            plt.close(fig)
+            continue
+
+        display = METRIC_DISPLAY.get(metric, metric.replace("_", " ").title())
+        ax.set_title(f"Score Distribution — {display}", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Score", fontsize=11)
+        ax.set_ylabel("Count", fontsize=11)
+        ax.set_xlim(-0.02, 1.02)
+        ax.legend(fontsize=9, loc="upper left")
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(out / f"10_dist_by_intent_{metric}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved += 1
+
+    return saved
+
+
 # ── Stats table ───────────────────────────────────────────────
 
 def print_stats(df: pd.DataFrame, metrics: list[str]):
@@ -376,34 +450,40 @@ def main():
     print(f"Charts → {out}/\n")
 
     plot_distributions(df, metrics, out)
-    print("  [1/9] distributions")
+    print("  [1/10] distributions")
 
     plot_boxplot(df, metrics, out)
-    print("  [2/9] boxplot")
+    print("  [2/10] boxplot")
 
     plot_by_intent(df, metrics, out)
-    print("  [3/9] by intent")
+    print("  [3/10] by intent")
 
     plot_by_difficulty(df, metrics, out)
-    print("  [4/9] by difficulty")
+    print("  [4/10] by difficulty")
 
     plot_by_language(df, metrics, out)
-    print("  [5/9] by language")
+    print("  [5/10] by language")
 
     n_pr = plot_precision_recall(df, out)
     if n_pr:
-        print(f"  [6/9] precision vs recall ({n_pr} intent charts + 1 overview)")
+        print(f"  [6/10] precision vs recall ({n_pr} intent charts + 1 overview)")
     else:
-        print("  [6/9] precision vs recall (skipped)")
+        print("  [6/10] precision vs recall (skipped)")
 
     plot_failure_rate(df, metrics, out)
-    print("  [7/9] failure rate")
+    print("  [7/10] failure rate")
 
     plot_timing(df, out)
-    print("  [8/9] timing")
+    print("  [8/10] timing")
 
     plot_heatmap(df, metrics, out)
-    print("  [9/9] heatmap")
+    print("  [9/10] heatmap")
+
+    n_dist = plot_dist_by_intent(df, metrics, out)
+    if n_dist:
+        print(f"  [10/10] score dist by intent ({n_dist} charts)")
+    else:
+        print("  [10/10] score dist by intent (skipped — need intent column)")
 
     print_stats(df, metrics)
     print(f"\nAll charts saved to {out}/")

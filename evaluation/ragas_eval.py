@@ -637,92 +637,6 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
     print(f"{'=' * 60}")
 
 
-# ── Score distribution charts ──────────────────────────────────
-
-INTENT_LABELS = {
-    "product_search": "PS (Product Search)",
-    "similar_search": "SM (Similar Search)",
-    "news_search": "NS (News Search)",
-}
-
-INTENT_COLORS = {
-    "product_search": "#2196F3",   # blue
-    "similar_search": "#FF9800",   # orange
-    "news_search": "#4CAF50",     # green
-}
-
-METRIC_DISPLAY = {
-    "faithfulness": "Faithfulness",
-    "context_precision": "Context Precision",
-    "context_recall": "Context Recall",
-    "answer_relevancy": "Answer Relevancy",
-}
-
-
-def generate_score_charts(rows: list[dict[str, Any]], out_dir: Path) -> list[Path]:
-    """Generate 4 score-distribution charts (one per metric), each split by intent.
-
-    Each chart is an overlaid histogram with 3 colours for PS / SM / NS.
-    Returns the list of saved file paths.
-    """
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import numpy as np
-    except ImportError:
-        print("  [charts] matplotlib not installed — skipping chart generation.")
-        return []
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-
-    metric_names = [
-        m for m in ("faithfulness", "context_precision", "context_recall", "answer_relevancy")
-        if any(row.get(m) not in ("", None) for row in rows)
-    ]
-
-    for metric in metric_names:
-        fig, ax = plt.subplots(figsize=(8, 5))
-        bins = np.linspace(0, 1, 21)  # 0.00, 0.05, … 1.00
-        has_data = False
-
-        for intent_key in ("product_search", "similar_search", "news_search"):
-            values = [
-                float(r[metric])
-                for r in rows
-                if r.get("intent") == intent_key and r.get(metric) not in ("", None)
-            ]
-            if not values:
-                continue
-            has_data = True
-            label = f"{INTENT_LABELS[intent_key]}  (n={len(values)}, avg={np.mean(values):.3f})"
-            ax.hist(
-                values, bins=bins, alpha=0.55, label=label,
-                color=INTENT_COLORS[intent_key], edgecolor="white", linewidth=0.5,
-            )
-
-        if not has_data:
-            plt.close(fig)
-            continue
-
-        display = METRIC_DISPLAY.get(metric, metric)
-        ax.set_title(f"Score Distribution — {display}", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Score", fontsize=11)
-        ax.set_ylabel("Count", fontsize=11)
-        ax.set_xlim(-0.02, 1.02)
-        ax.legend(fontsize=9, loc="upper left")
-        ax.grid(axis="y", alpha=0.3)
-        fig.tight_layout()
-
-        path = out_dir / f"score_dist_{metric}.png"
-        fig.savefig(path, dpi=150)
-        plt.close(fig)
-        saved.append(path)
-
-    return saved
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Ragas evaluation for the Coffee RAG system.")
     parser.add_argument("--dataset", type=Path, default=ROOT / "ragas_eval_dataset.json")
@@ -761,14 +675,8 @@ def main() -> None:
         all_rows = load_existing_rows(args.out) if resuming else rows
         write_responses(all_rows, args.responses_out)
         print_summary(all_rows)
-        chart_dir = args.out.parent / "charts"
-        chart_files = generate_score_charts(all_rows, chart_dir)
         print(f"\nWrote {args.out} ({len(all_rows)} total rows)")
         print(f"Wrote {args.responses_out} ({len(all_rows)} responses)")
-        if chart_files:
-            print(f"Wrote {len(chart_files)} charts to {chart_dir}/")
-            for cf in chart_files:
-                print(f"  {cf.name}")
 
 
 if __name__ == "__main__":
