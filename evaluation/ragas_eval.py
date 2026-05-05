@@ -446,7 +446,11 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
     print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
-    print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
+    early_stop_enabled = args.use_rrf
+    if early_stop_enabled:
+        print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
+    else:
+        print(f"  early stop: DISABLED (--no-use-rrf mode)")
     print(f"  intent-aware: context metrics skipped for knowledge_qa, comparison, exploration, edge_case")
     print(f"{'=' * 60}\n")
 
@@ -492,7 +496,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
             cp = scores.get("context_precision")
             if cp is not None and cp != "" and float(cp) == 0.0 and intent in RETRIEVAL_INTENTS:
                 zero_precision_count += 1
-            if zero_precision_count >= zero_precision_threshold:
+            if early_stop_enabled and zero_precision_count >= zero_precision_threshold:
                 print(f"\n{'!' * 60}")
                 print(f"  EARLY STOP: {zero_precision_count} cases with context_precision=0 "
                       f"(reached threshold {zero_precision_threshold}, {ZERO_PRECISION_STOP_RATIO:.0%} of {total})")

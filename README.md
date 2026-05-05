@@ -341,23 +341,20 @@ Evaluates the RAG pipeline using [RAGAS](https://docs.ragas.io/) metrics with an
 
 ### Evaluation Dataset
 
-**File**: `ragas_eval_dataset.json` (500 cases)
+**File**: `ragas_eval_dataset.json` (600 cases)
 
 | Intent           | Cases | Description                                |
 | ---------------- | ----: | ------------------------------------------ |
-| product_search   |   121 | Find beans by attributes                   |
-| knowledge_qa     |   100 | Coffee knowledge questions                 |
-| similar_search   |    69 | Find similar beans                         |
-| comparison       |    69 | Compare processing/roast/origin            |
-| news_search      |    69 | Coffee industry news                       |
-| exploration      |    61 | Statistics and data exploration            |
-| edge_case        |    11 | Out-of-scope / adversarial queries         |
+| product_search   |   200 | Find beans by attributes                   |
+| similar_search   |   200 | Find similar beans                         |
+| news_search      |   200 | Coffee industry news                       |
 
-**Dataset generation** (`evaluation/generate_dataset.py`):
-- Samples real beans from the database
-- Generates questions via LLM (GPT-4o-mini)
-- Runs actual retrieval pipeline to build ground truth contexts
-- Supports resume from partial results
+**Difficulty:** 30% easy, 45% medium, 25% hard | **Language:** 60% Vietnamese, 40% English
+
+**Dataset generation:**
+- Template-based question generation from real beans/news data (no fabrication)
+- Ground truth contexts built directly from `coffee_beans.json` and `coffee_news.json`
+- LLM-powered generation also available via `evaluation/generate_dataset.py` (GPT-4o-mini)
 
 ### Running Evaluation
 
@@ -439,9 +436,12 @@ coffee-rag/
 │
 ├── evaluation/
 │   ├── ragas_eval.py                 # RAGAS evaluation runner
+│   ├── eda.py                        # EDA charts & statistics (10 chart types)
 │   ├── generate_dataset.py           # Eval dataset generator (LLM-powered)
 │   ├── fix_ground_truth.py           # Ground truth cleanup utility
-│   └── results/                      # CSV evaluation results
+│   └── results/
+│       ├── ragas_results.csv         # Evaluation scores
+│       └── charts/                   # Generated EDA charts (PNG)
 │
 └── app/
     └── streamlit_app.py              # Chatbot UI (Streamlit)

@@ -302,19 +302,19 @@ Mỗi case trong dataset JSON:
 
 ### Intent distribution
 
-**Dataset v4** (retrieval-grounded, 410 cases):
+**Dataset v5** (template-based, 600 cases):
 
 | Intent | Cases | Metrics đánh giá |
 |--------|------:|-------------------|
-| product_search | 130 | CP, CR, Faithfulness, Answer Relevancy |
-| similar_search | 80 | CP, CR, Faithfulness, Answer Relevancy |
-| comparison | 70 | Faithfulness, Answer Relevancy |
-| knowledge_qa | 70 | Faithfulness, Answer Relevancy |
-| news_search | 60 | CP, CR, Faithfulness, Answer Relevancy |
+| product_search | 200 | CP, CR, Faithfulness, Answer Relevancy |
+| similar_search | 200 | CP, CR, Faithfulness, Answer Relevancy |
+| news_search | 200 | CP, CR, Faithfulness, Answer Relevancy |
 
 **Difficulty:** 30% easy, 45% medium, 25% hard
 
 **Language:** 60% Vietnamese, 40% English
+
+> **Note:** comparison, knowledge_qa, exploration, edge_case đã được loại bỏ trong v5. Dataset mới chỉ giữ 3 retrieval intents để tập trung đánh giá hiệu quả retrieval pipeline.
 
 ### Cách generate dataset
 
@@ -744,11 +744,33 @@ print(df.groupby("language")[["context_precision", "context_recall"]].mean())
 | `error` | Error message nếu có |
 | `elapsed_s` | Thời gian xử lý (giây) |
 
-### EDA notebook
+### EDA charts
 
-File: `evaluation/ragas_eda.ipynb`
+**File:** `evaluation/eda.py` — Script tạo 10 loại chart tự động từ CSV kết quả.
 
-Notebook phân tích kết quả với biểu đồ: score distributions, breakdown theo intent/difficulty/language, correlation analysis.
+```bash
+# Chạy EDA (mặc định đọc evaluation/results/ragas_results.csv)
+python -m evaluation.eda
+
+# Hoặc chỉ định CSV khác
+python -m evaluation.eda --csv evaluation/results/ragas_results_v5.csv
+```
+
+**Output:** 10+ chart files trong `evaluation/results/charts/`:
+
+| Chart | File | Nội dung |
+|------:|------|----------|
+| 1 | `1_distributions.png` | Score histogram + KDE cho mỗi metric |
+| 2 | `2_boxplot.png` | Boxplot so sánh 4 metrics |
+| 3 | `3_by_intent.png` | Bar chart scores theo intent |
+| 4 | `4_by_difficulty.png` | Bar chart scores theo difficulty |
+| 5 | `5_by_language.png` | Bar chart scores theo language |
+| 6 | `6_precision_recall_*.png` | Scatter: precision vs recall (per intent + overview) |
+| 7 | `7_failure_rate.png` | % cases có score < 0.3 theo intent |
+| 8 | `8_timing.png` | Elapsed time distribution |
+| 9 | `9_heatmap.png` | Heatmap intent × metric (mean scores) |
+| 10a | `10a_kde_*.png` | KDE density curves per metric — 3 colors for PS/SM/NS |
+| 10b | `10b_grouped_*.png` | Grouped bar chart per metric — side-by-side PS/SM/NS |
 
 ---
 

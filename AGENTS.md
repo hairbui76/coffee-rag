@@ -433,7 +433,7 @@ coffee-rag/
 ├── AGENTS.md                    # Chi tiết thiết kế hệ thống (file này)
 ├── coffee_beans.json            # Dữ liệu beans gốc (14,537 sản phẩm)
 ├── coffee_news.json             # Dữ liệu news gốc (1,947 bài báo)
-├── ragas_eval_dataset.json      # Dataset đánh giá chính (500 cases, RAGAS format)
+├── ragas_eval_dataset.json      # Dataset đánh giá chính (600 cases, 3 intents: PS/SM/NS)
 ├── requirements.txt
 ├── .env.example                 # Template biến môi trường
 │
@@ -469,9 +469,10 @@ coffee-rag/
 │
 ├── evaluation/
 │   ├── ragas_eval.py            # RAGAS evaluation runner (intent-aware metrics)
+│   ├── eda.py                   # EDA charts & statistics (10 chart types)
 │   ├── generate_dataset.py      # Tạo eval dataset (LLM-powered, retrieval-grounded)
 │   ├── fix_ground_truth.py      # Utility: thay ground_truth_contexts bằng real beans
-│   └── results/                 # CSV kết quả đánh giá
+│   └── results/                 # CSV kết quả đánh giá + charts (PNG)
 │
 ├── app/
 │   └── streamlit_app.py         # UI chatbot (Streamlit)
