@@ -3,6 +3,7 @@
 Example:
     python -m evaluation.ragas_eval --limit 5
     python -m evaluation.ragas_eval --mode retrieval --limit 20 --intent product_search
+    python -m evaluation.ragas_eval --mode retrieval --metrics context_precision retrieval_recall_soft --limit 10
     python -m evaluation.ragas_eval --mode retrieval --limit 50 --workers 8 --verbose
 """
 
@@ -14,10 +15,12 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from dotenv import load_dotenv
@@ -33,6 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+import numpy as np  # noqa: E402
 from openai import AsyncOpenAI  # noqa: E402
 from ragas.embeddings.base import embedding_factory  # noqa: E402
 from ragas.llms import llm_factory  # noqa: E402
@@ -50,12 +54,22 @@ from src.pipeline import CoffeeRAG  # noqa: E402
 
 
 DEFAULT_METRICS = {
-    "full": ["faithfulness", "context_precision", "context_recall", "answer_relevancy"],
-    "retrieval": ["context_precision", "context_recall"],
+    # Ragas ContextRecall is still available as --metrics context_recall, but it
+    # is a strict answer-support metric, not a document-retrieval recall metric.
+    "full": [
+        "faithfulness",
+        "context_precision",
+        "retrieval_recall_soft",
+        "context_recall_soft",
+        "answer_relevancy",
+    ],
+    "retrieval": ["context_precision", "retrieval_recall_soft", "context_recall_soft"],
 }
 
 RETRIEVAL_INTENTS = {"product_search", "similar_search", "news_search"}
-CONTEXT_METRICS = {"context_precision", "context_recall"}
+CONTEXT_METRICS = {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
+OPENAI_LLM_METRICS = {"faithfulness", "context_precision", "context_recall", "answer_relevancy"}
+SOFT_EMBEDDING_METRICS = {"context_recall_soft", "retrieval_recall_soft"}
 
 
 def _metrics_for_intent(intent: str, all_metrics: dict[str, Any]) -> dict[str, Any]:
@@ -69,6 +83,17 @@ def _metrics_for_intent(intent: str, all_metrics: dict[str, Any]) -> dict[str, A
     if intent in RETRIEVAL_INTENTS:
         return all_metrics
     return {k: v for k, v in all_metrics.items() if k not in CONTEXT_METRICS}
+
+
+def _uses_openai(metric_names: list[str], embedding_model: str, ar_embedding_model: str | None) -> bool:
+    if any(name in OPENAI_LLM_METRICS for name in metric_names):
+        return True
+
+    if any(name in SOFT_EMBEDDING_METRICS for name in metric_names):
+        model = ar_embedding_model or embedding_model
+        return "/" not in model
+
+    return False
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -162,6 +187,193 @@ def response_summary_text(response: CoffeeResponse | None) -> str:
     return str(response)
 
 
+# ── Soft context recall (embedding max-sim per reference unit) ─────────────
+
+_SOFT_EMBED_MAX_CHARS = 8000
+_SOFT_REF_MIN_UNIT_CHARS = 12
+_RETRIEVAL_SOFT_SIM_LOW = float(os.getenv("RETRIEVAL_RECALL_SOFT_LOW", "0.78"))
+_RETRIEVAL_SOFT_SIM_HIGH = float(os.getenv("RETRIEVAL_RECALL_SOFT_HIGH", "0.92"))
+
+
+def _truncate_for_embed(text: str, max_chars: int = _SOFT_EMBED_MAX_CHARS) -> str:
+    t = (text or "").strip()
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
+def _reference_units(reference: str, min_chars: int = _SOFT_REF_MIN_UNIT_CHARS) -> list[str]:
+    """Split ground truth into sentence-like units for max-sim pooling."""
+    text = (reference or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?。！？])\s+|\n+", text)
+    units = [p.strip() for p in parts if p.strip() and len(p.strip()) >= min_chars]
+    if not units:
+        return [text] if text else []
+    return units
+
+
+def _l2_normalize_rows(arr: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    return arr / norms
+
+
+def _scale_similarity(sim: float, low: float, high: float) -> float:
+    if high <= low:
+        return 1.0 if sim >= high else 0.0
+    return max(0.0, min(1.0, (sim - low) / (high - low)))
+
+
+def _normalize_key(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"\s+", " ", value)
+    return value.strip(" .,/\\")
+
+
+def _context_keys(context: str) -> set[str]:
+    """Stable identifiers for exact retrieval overlap before semantic scoring."""
+    text = context or ""
+    keys: set[str] = set()
+
+    url_match = re.search(r"\bURL:\s*(\S+)", text)
+    if url_match:
+        keys.add("url:" + _normalize_key(url_match.group(1)))
+
+    bean_match = re.match(r"Bean:\s*(.*?)\.\s*Roaster:\s*(.*?)\.\s", text, flags=re.S)
+    if bean_match:
+        name = _normalize_key(bean_match.group(1))
+        roaster = _normalize_key(bean_match.group(2))
+        if name and roaster:
+            keys.add("bean_roaster:" + name + "|" + roaster)
+        elif name:
+            keys.add("bean:" + name)
+
+    article_match = re.match(r"Article:\s*(.*?)\.\s*Source:\s*(.*?)\.\s", text, flags=re.S)
+    if article_match:
+        title = _normalize_key(article_match.group(1))
+        source = _normalize_key(article_match.group(2))
+        if title and source:
+            keys.add("article_source:" + title + "|" + source)
+        elif title:
+            keys.add("article:" + title)
+
+    return keys
+
+
+class SoftContextRecall:
+    """Mean over reference units of max cosine similarity to any retrieved context.
+
+    Ragas ``ContextRecall`` uses an LLM to judge whether each reference claim
+    is supported by a context span — strict on wording and structure. This metric
+    aligns units of ``reference`` (sentences) with retrieved passages in
+    embedding space instead.
+    """
+
+    __slots__ = ("embeddings",)
+
+    def __init__(self, embeddings: Any):
+        self.embeddings = embeddings
+
+    async def ascore(
+        self,
+        *,
+        user_input: str,
+        reference: str,
+        retrieved_contexts: list[str],
+    ) -> Any:
+        del user_input
+        units = _reference_units(reference)
+        if not units:
+            return SimpleNamespace(value=float("nan"))
+        contexts = [c for c in retrieved_contexts if c and str(c).strip()]
+        if not contexts:
+            return SimpleNamespace(value=0.0)
+
+        ref_texts = [_truncate_for_embed(u) for u in units]
+        ctx_texts = [_truncate_for_embed(c) for c in contexts]
+
+        ref_emb = await self.embeddings.aembed_texts(ref_texts)
+        ctx_emb = await self.embeddings.aembed_texts(ctx_texts)
+        a = np.atleast_2d(np.asarray(ref_emb, dtype=np.float64))
+        b = np.atleast_2d(np.asarray(ctx_emb, dtype=np.float64))
+        a = _l2_normalize_rows(a)
+        b = _l2_normalize_rows(b)
+        sims = a @ b.T
+        recall = float(np.mean(np.max(sims, axis=1)))
+        recall = max(0.0, min(1.0, recall))
+        return SimpleNamespace(value=recall)
+
+
+class SoftRetrievalRecall:
+    """Recall against dataset ground_truth_contexts.
+
+    This is closer to IR recall than Ragas ContextRecall: each reference context
+    is a target document/passage. Exact URL/name overlap receives full credit;
+    otherwise the metric gives partial credit from embedding similarity.
+    """
+
+    __slots__ = ("embeddings", "sim_low", "sim_high")
+
+    def __init__(
+        self,
+        embeddings: Any,
+        sim_low: float = _RETRIEVAL_SOFT_SIM_LOW,
+        sim_high: float = _RETRIEVAL_SOFT_SIM_HIGH,
+    ):
+        self.embeddings = embeddings
+        self.sim_low = sim_low
+        self.sim_high = sim_high
+
+    async def ascore(
+        self,
+        *,
+        user_input: str,
+        reference_contexts: list[str],
+        retrieved_contexts: list[str],
+    ) -> Any:
+        del user_input
+        refs = [str(c).strip() for c in reference_contexts if c and str(c).strip()]
+        if not refs:
+            return SimpleNamespace(value=float("nan"))
+
+        contexts = [str(c).strip() for c in retrieved_contexts if c and str(c).strip()]
+        if not contexts:
+            return SimpleNamespace(value=0.0)
+
+        retrieved_keys = set().union(*(_context_keys(c) for c in contexts))
+        scores: list[float | None] = []
+        unresolved_refs: list[str] = []
+        unresolved_positions: list[int] = []
+
+        for ref in refs:
+            ref_keys = _context_keys(ref)
+            if ref_keys and ref_keys & retrieved_keys:
+                scores.append(1.0)
+            else:
+                scores.append(None)
+                unresolved_refs.append(ref)
+                unresolved_positions.append(len(scores) - 1)
+
+        if unresolved_refs:
+            ref_texts = [_truncate_for_embed(c) for c in unresolved_refs]
+            ctx_texts = [_truncate_for_embed(c) for c in contexts]
+            ref_emb = await self.embeddings.aembed_texts(ref_texts)
+            ctx_emb = await self.embeddings.aembed_texts(ctx_texts)
+            a = _l2_normalize_rows(np.atleast_2d(np.asarray(ref_emb, dtype=np.float64)))
+            b = _l2_normalize_rows(np.atleast_2d(np.asarray(ctx_emb, dtype=np.float64)))
+            sims = a @ b.T
+
+            for i, pos in enumerate(unresolved_positions):
+                max_sim = float(np.max(sims[i]))
+                scores[pos] = _scale_similarity(max_sim, self.sim_low, self.sim_high)
+
+        recall = float(np.mean([s for s in scores if s is not None]))
+        recall = max(0.0, min(1.0, recall))
+        return SimpleNamespace(value=recall)
+
+
 def load_existing_ids(csv_path: Path) -> set[str]:
     """Return the set of case IDs already present in the results CSV."""
     if not csv_path.exists():
@@ -198,40 +410,69 @@ def load_cases(path: Path, limit: int | None, offset: int, intent: str | None, l
 
 def build_metrics(names: list[str], evaluator_model: str, embedding_model: str,
                   ar_embedding_model: str | None = None):
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    llm = llm_factory(evaluator_model, client=client)
-    embeddings = embedding_factory("openai", model=embedding_model, client=client)
+    client = None
+    llm = None
+    embeddings = None
 
-    # Build AR embeddings: use HuggingFace for models with "/" (e.g. BAAI/bge-m3),
-    # otherwise use OpenAI provider.
-    if ar_embedding_model and ar_embedding_model != embedding_model:
-        if "/" in ar_embedding_model:
-            ar_embeddings = embedding_factory(
-                "huggingface", model=ar_embedding_model, interface="modern",
-            )
-        else:
-            ar_embeddings = embedding_factory(
-                "openai", model=ar_embedding_model, client=client,
-            )
-    else:
-        ar_embeddings = embeddings
+    def get_client():
+        nonlocal client
+        if client is None:
+            client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        return client
 
-    ar_metric = AnswerRelevancy(llm=llm, embeddings=ar_embeddings)
-    # Patch prompt to force same-language reverse-question generation.
-    # Without this, the English-only examples bias the LLM to generate
-    # English questions from Vietnamese responses, tanking cosine similarity.
-    ar_metric.prompt.instruction += (
-        "\nIMPORTANT: Generate the question in the SAME LANGUAGE as the response. "
-        "If the response is in Vietnamese, generate a Vietnamese question. "
-        "If the response is in English, generate an English question."
+    def get_llm():
+        nonlocal llm
+        if llm is None:
+            llm = llm_factory(evaluator_model, client=get_client())
+        return llm
+
+    def get_embeddings():
+        nonlocal embeddings
+        if embeddings is None:
+            embeddings = embedding_factory("openai", model=embedding_model, client=get_client())
+        return embeddings
+
+    need_ar_model = (
+        "answer_relevancy" in names
+        or "context_recall_soft" in names
+        or "retrieval_recall_soft" in names
     )
+    if need_ar_model:
+        if ar_embedding_model and ar_embedding_model != embedding_model:
+            if "/" in ar_embedding_model:
+                ar_embeddings = embedding_factory(
+                    "huggingface", model=ar_embedding_model, interface="modern",
+                )
+            else:
+                ar_embeddings = embedding_factory(
+                    "openai", model=ar_embedding_model, client=get_client(),
+                )
+        else:
+            ar_embeddings = get_embeddings()
+    else:
+        ar_embeddings = None
 
-    available = {
-        "faithfulness": Faithfulness(llm=llm),
-        "context_precision": ContextPrecision(llm=llm),
-        "context_recall": ContextRecall(llm=llm),
-        "answer_relevancy": ar_metric,
-    }
+    available: dict[str, Any] = {}
+    if "faithfulness" in names:
+        available["faithfulness"] = Faithfulness(llm=get_llm())
+    if "context_precision" in names:
+        available["context_precision"] = ContextPrecision(llm=get_llm())
+    if "context_recall" in names:
+        available["context_recall"] = ContextRecall(llm=get_llm())
+    if "answer_relevancy" in names:
+        ar_metric = AnswerRelevancy(llm=get_llm(), embeddings=ar_embeddings)
+        # Patch prompt to force same-language reverse-question generation.
+        ar_metric.prompt.instruction += (
+            "\nIMPORTANT: Generate the question in the SAME LANGUAGE as the response. "
+            "If the response is in Vietnamese, generate a Vietnamese question. "
+            "If the response is in English, generate an English question."
+        )
+        available["answer_relevancy"] = ar_metric
+    if "context_recall_soft" in names:
+        available["context_recall_soft"] = SoftContextRecall(ar_embeddings)
+    if "retrieval_recall_soft" in names:
+        available["retrieval_recall_soft"] = SoftRetrievalRecall(ar_embeddings)
+
     return {name: available[name] for name in names}
 
 
@@ -256,6 +497,18 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
             reference=sample["reference"],
             retrieved_contexts=sample["retrieved_contexts"],
         )
+    elif metric_name == "context_recall_soft":
+        result = await metric.ascore(
+            user_input=sample["question"],
+            reference=sample["reference"],
+            retrieved_contexts=sample["retrieved_contexts"],
+        )
+    elif metric_name == "retrieval_recall_soft":
+        result = await metric.ascore(
+            user_input=sample["question"],
+            reference_contexts=sample["reference_contexts"],
+            retrieved_contexts=sample["retrieved_contexts"],
+        )
     elif metric_name == "answer_relevancy":
         result = await metric.ascore(
             user_input=sample["question"],
@@ -265,7 +518,15 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
         raise ValueError(f"Unsupported metric: {metric_name}")
 
     value = getattr(result, "value", result)
-    return None if value is None else float(value)
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(out):
+        return None
+    return out
 
 
 async def score_all_metrics(metrics: dict[str, Any], sample: dict[str, Any]) -> dict[str, float | str]:
@@ -292,6 +553,15 @@ MAX_EVAL_CONTEXTS = 20
 
 PRODUCT_INTENTS = {"product_search", "similar_search"}
 NEWS_INTENTS = {"news_search"}
+
+
+def filter_reference_contexts_for_intent(intent: str, contexts: list[str]) -> list[str]:
+    """Mirror retrieved-context pruning so recall is not penalized by ignored types."""
+    if intent in PRODUCT_INTENTS:
+        return [c for c in contexts if str(c).startswith("Bean: ")]
+    if intent in NEWS_INTENTS:
+        return [c for c in contexts if str(c).startswith("Article: ")]
+    return contexts
 
 
 def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -329,6 +599,10 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         if news is not None and len(news) > MAX_EVAL_CONTEXTS:
             eval_ctx["news"] = news.head(MAX_EVAL_CONTEXTS)
     retrieved_contexts = build_retrieved_contexts(eval_ctx)
+    reference_contexts = filter_reference_contexts_for_intent(
+        case_intent,
+        case.get("ground_truth_contexts", []),
+    )
 
     response = None
     if args.mode == "full":
@@ -341,6 +615,7 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         "response": response_to_text(response),
         "response_summary": response_summary_text(response),
         "retrieved_contexts": retrieved_contexts,
+        "reference_contexts": reference_contexts,
         "intent": ctx.get("intent", ""),
         "entities": ctx.get("entities", {}),
         "bean_count": bean_count,
@@ -377,7 +652,14 @@ def log_sample(
     stats: RunningStats,
 ):
     score_parts = []
-    for name in ("context_precision", "context_recall", "faithfulness", "answer_relevancy"):
+    for name in (
+        "context_precision",
+        "context_recall",
+        "retrieval_recall_soft",
+        "context_recall_soft",
+        "faithfulness",
+        "answer_relevancy",
+    ):
         val = scores.get(name)
         if val not in ("", None):
             score_parts.append(f"{name}={val:.3f}")
@@ -392,7 +674,11 @@ def log_sample(
 
     if verbose:
         print(f"     question : {case['question'][:120]}")
-        print(f"     beans={sample['bean_count']}  news={sample['news_count']}  contexts={len(sample['retrieved_contexts'])}")
+        print(
+            f"     beans={sample['bean_count']}  news={sample['news_count']}  "
+            f"contexts={len(sample['retrieved_contexts'])}  "
+            f"ref_contexts={len(sample.get('reference_contexts', []))}"
+        )
         entities = sample.get("entities", {})
         if entities:
             ent_parts = [f"{k}={v}" for k, v in entities.items() if v]
@@ -411,15 +697,26 @@ def log_sample(
 # ── Main eval loop ────────────────────────────────────────────
 
 async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise ValueError("OPENAI_API_KEY is required for Ragas evaluator LLM and embeddings.")
-
     metric_names = args.metrics or DEFAULT_METRICS[args.mode]
-    unsupported = sorted(set(metric_names) - {"faithfulness", "context_precision", "context_recall", "answer_relevancy"})
+    unsupported = sorted(set(metric_names) - {
+        "faithfulness",
+        "context_precision",
+        "context_recall",
+        "context_recall_soft",
+        "retrieval_recall_soft",
+        "answer_relevancy",
+    })
     if unsupported:
         raise ValueError(f"Unsupported metrics: {', '.join(unsupported)}")
     if args.mode == "retrieval":
-        metric_names = [name for name in metric_names if name in {"context_precision", "context_recall"}]
+        metric_names = [
+            name
+            for name in metric_names
+            if name in {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
+        ]
+
+    if _uses_openai(metric_names, args.embedding_model, args.ar_embedding_model) and not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("OPENAI_API_KEY is required for selected Ragas/OpenAI-backed metrics.")
 
     skip_ids = load_existing_ids(args.out) if args.limit == 0 else None
     cases = load_cases(args.dataset, args.limit, args.offset, args.intent, args.language, skip_ids=skip_ids)
@@ -446,11 +743,15 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
     print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
-    early_stop_enabled = args.use_rrf
+    early_stop_enabled = (
+        args.use_rrf
+        and "context_precision" in metric_names
+        and "retrieval_recall_soft" not in metric_names
+    )
     if early_stop_enabled:
         print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
     else:
-        print(f"  early stop: DISABLED (--no-use-rrf mode)")
+        print("  early stop: DISABLED")
     print(f"  intent-aware: context metrics skipped for knowledge_qa, comparison, exploration, edge_case")
     print(f"{'=' * 60}\n")
 
@@ -481,6 +782,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "language": case.get("language", ""),
                 "question": case["question"],
                 "retrieved_context_count": len(sample["retrieved_contexts"]),
+                "reference_context_count": len(sample["reference_contexts"]),
                 "bean_count": sample["bean_count"],
                 "news_count": sample["news_count"],
                 "response": sample["response"],
@@ -570,9 +872,19 @@ def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = Fal
     else:
         merged = rows
 
-    preferred = ["id", "intent", "difficulty", "language", "question", "retrieved_context_count",
-                 "bean_count", "news_count", "elapsed_s"]
-    metric_cols = ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]
+    preferred = [
+        "id", "intent", "difficulty", "language", "question",
+        "retrieved_context_count", "reference_context_count",
+        "bean_count", "news_count", "elapsed_s",
+    ]
+    metric_cols = [
+        "context_precision",
+        "context_recall",
+        "retrieval_recall_soft",
+        "context_recall_soft",
+        "faithfulness",
+        "answer_relevancy",
+    ]
     tail = ["response", "reference", "error"]
     used = set(preferred + metric_cols + tail)
     extra = sorted(k for row in merged for k in row if k not in used)
@@ -587,7 +899,14 @@ def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = Fal
 def print_summary(rows: list[dict[str, Any]]) -> None:
     metric_names = [
         name
-        for name in ("faithfulness", "context_precision", "context_recall", "answer_relevancy")
+        for name in (
+            "faithfulness",
+            "context_precision",
+            "context_recall",
+            "retrieval_recall_soft",
+            "context_recall_soft",
+            "answer_relevancy",
+        )
         if any(row.get(name) not in ("", None) for row in rows)
     ]
     print(f"\n{'=' * 60}")
@@ -650,7 +969,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--intent", help="Filter by dataset intent, e.g. product_search")
     parser.add_argument("--language", choices=["vi", "en"], help="Filter by language.")
-    parser.add_argument("--metrics", nargs="+", choices=["faithfulness", "context_precision", "context_recall", "answer_relevancy"])
+    parser.add_argument("--metrics", nargs="+", choices=[
+        "faithfulness",
+        "context_precision",
+        "context_recall",
+        "context_recall_soft",
+        "retrieval_recall_soft",
+        "answer_relevancy",
+    ])
     parser.add_argument("--top-k-beans", type=int, default=int(os.getenv("TOP_K_BEANS", "5")))
     parser.add_argument("--top-k-news", type=int, default=int(os.getenv("TOP_K_NEWS", "5")))
     parser.add_argument("--use-rrf", action=argparse.BooleanOptionalAction, default=True,
