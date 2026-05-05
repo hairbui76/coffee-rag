@@ -123,6 +123,10 @@ VI_FLAVOR_MAP = {
 
 _QUOTED_NAME_RE = re.compile(r"""['""'\u2018\u2019\u201C\u201D]([^'""'\u2018\u2019\u201C\u201D]{2,50})['""'\u2018\u2019\u201C\u201D]""")
 _OF_ROASTER_RE = re.compile(r"(?:của|by|from|of)\s+([A-Z][\w\s&'.]+?)(?:\s*[.,;?!]|$)", re.IGNORECASE)
+_SIMILAR_PRODUCT_RE = re.compile(
+    r"(?:similar to|tương tự như|giống|like)\s+(?:the\s+)?(.+?)\s+(?:by|from|của)\s+([A-ZÀ-Ỹ0-9][\wÀ-ỹ\s&'.-]+?)(?:\s*[.,;?!]|$)",
+    re.IGNORECASE,
+)
 
 
 def _rule_based_extract(query: str) -> dict:
@@ -136,6 +140,14 @@ def _rule_based_extract(query: str) -> dict:
     quoted = _QUOTED_NAME_RE.search(query)
     if quoted:
         entities["product"] = quoted.group(1).strip()
+
+    similar_match = _SIMILAR_PRODUCT_RE.search(query)
+    if similar_match and not entities["product"]:
+        product = similar_match.group(1).strip(" '\"“”‘’")
+        if 2 <= len(product) <= 80:
+            entities["product"] = product
+    if similar_match and not entities["roaster"]:
+        entities["roaster"] = similar_match.group(2).strip()
 
     roaster_match = _OF_ROASTER_RE.search(query)
     if roaster_match:
@@ -225,6 +237,10 @@ def extract_entities(query: str, client: OpenAI | None = None) -> dict:
                 expected_keys = {"flavor", "origin", "roast", "processing", "typology", "roaster", "product"}
                 for key in expected_keys:
                     result.setdefault(key, None)
+                fallback = _rule_based_extract(query)
+                for key in ("product", "roaster"):
+                    if not result.get(key) and fallback.get(key):
+                        result[key] = fallback[key]
                 result["flavor"] = _clean_flavors(result.get("flavor"))
                 result["roaster"] = _validate_roaster(
                     result.get("roaster"), result.get("origin")

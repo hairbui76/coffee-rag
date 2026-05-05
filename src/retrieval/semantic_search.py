@@ -40,6 +40,13 @@ def _tokenize(text: str) -> list[str]:
 
 class SemanticSearcher:
     def __init__(self, model_name: str = MODEL_NAME):
+        if model_name.startswith("text-embedding-"):
+            raise ValueError(
+                "EMBEDDING_MODEL is used by SentenceTransformer for FAISS retrieval, "
+                f"but got OpenAI model '{model_name}'. Set EMBEDDING_MODEL=BAAI/bge-m3 "
+                "to match the current local FAISS indices. RAGAS_EMBEDDING_MODEL can "
+                "remain text-embedding-3-small for Ragas evaluator metrics."
+            )
         self.model = SentenceTransformer(model_name)
         self._emb_dir = EMB_DIR
 
@@ -48,8 +55,27 @@ class SemanticSearcher:
 
         self.beans_index = faiss.read_index(str(EMB_DIR / "beans.index"))
         self.news_index = faiss.read_index(str(EMB_DIR / "news.index"))
+        self._validate_index_dimensions(model_name)
 
         self._bm25_news = self._build_bm25_news()
+
+    def _validate_index_dimensions(self, model_name: str) -> None:
+        model_dim = self.model.get_sentence_embedding_dimension()
+        if model_dim is None:
+            model_dim = self.model.get_embedding_dimension()
+
+        mismatches = []
+        for label, index in (("beans", self.beans_index), ("news", self.news_index)):
+            if index.d != model_dim:
+                mismatches.append(f"{label}.index dim={index.d}")
+
+        if mismatches:
+            raise ValueError(
+                "FAISS index dimension does not match EMBEDDING_MODEL. "
+                f"EMBEDDING_MODEL={model_name!r} produces dim={model_dim}, but "
+                f"{', '.join(mismatches)}. Rebuild local embeddings with: "
+                "python -m src.preprocessing.build_embeddings --force"
+            )
 
     def _build_bm25_news(self) -> BM25Okapi:
         title = self.news_chunks["title"].fillna("").astype(str)

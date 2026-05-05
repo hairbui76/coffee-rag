@@ -49,6 +49,28 @@ def _prioritize_matching(beans: "pd.DataFrame", entities: dict, top_k: int) -> "
     return beans.reset_index(drop=True)
 
 
+def _dedupe_news_articles(news: "pd.DataFrame", top_k: int) -> "pd.DataFrame":
+    """Keep one best-ranked chunk per article before applying the final top-k.
+
+    News retrieval is chunk-based, but evaluation and UI usefulness are closer
+    to article-level. Without this, several chunks from the same article can
+    occupy the top-k slots and lower article recall.
+    """
+    if news is None or news.empty:
+        return news
+    if "article_url" in news.columns:
+        return news.drop_duplicates(subset="article_url", keep="first").head(top_k).reset_index(drop=True)
+    return news.head(top_k).reset_index(drop=True)
+
+
+def _seed_query_from_match(product_match: "pd.DataFrame | None") -> str | None:
+    """Use the matched seed bean profile as the semantic query for similar search."""
+    if product_match is None or product_match.empty:
+        return None
+    row = product_match.iloc[0]
+    return str(row.get("document_text") or row.get("product_name") or "").strip() or None
+
+
 class CoffeeRAG:
     def __init__(self):
         self.searcher = SemanticSearcher()
@@ -85,8 +107,18 @@ class CoffeeRAG:
         product_name = entities.get("product")
         roaster_name = entities.get("roaster")
 
-        sem_beans = self.searcher.search_beans(query, top_k=top_k_beans * 3)
-        news_candidate_k = top_k_news * 3
+        product_match = None
+        if product_name:
+            product_match = match_by_product_name(
+                self.searcher.beans, product_name, roaster_name
+            )
+
+        bean_query = query
+        if intent == "similar_search":
+            bean_query = _seed_query_from_match(product_match) or query
+
+        sem_beans = self.searcher.search_beans(bean_query, top_k=top_k_beans * 6)
+        news_candidate_k = max(top_k_news * 6, 20)
         sem_news = self.searcher.search_news(query, top_k=news_candidate_k)
         if use_rrf:
             bm25_news = self.searcher.search_news_bm25(query, top_k=news_candidate_k)
@@ -95,12 +127,6 @@ class CoffeeRAG:
                 sem_news = reciprocal_rank_fusion(
                     *news_lists, id_col="_chunk_id", top_k=news_candidate_k,
                 )
-
-        product_match = None
-        if product_name:
-            product_match = match_by_product_name(
-                self.searcher.beans, product_name, roaster_name
-            )
 
         struct_beans = None
         has_filters = any(entities.get(k) for k in ("origin", "roast", "flavor", "typology", "processing"))
@@ -144,7 +170,11 @@ class CoffeeRAG:
             "intent": intent,
             "entities": entities,
             "beans": beans,
-            "news": sem_news.head(top_k_news) if intent in ("news_search", "knowledge_qa") else sem_news.head(2),
+            "news": (
+                _dedupe_news_articles(sem_news, top_k_news)
+                if intent in ("news_search", "knowledge_qa")
+                else _dedupe_news_articles(sem_news, 2)
+            ),
         }
 
     def ask(self, query: str) -> CoffeeResponse:

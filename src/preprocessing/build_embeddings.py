@@ -33,6 +33,13 @@ def _build_and_save(model, texts, npy_path, index_path, label):
 
 
 def build_all(model_name: str = MODEL_NAME, force: bool = False):
+    if model_name.startswith("text-embedding-"):
+        raise ValueError(
+            "EMBEDDING_MODEL is used by SentenceTransformer when building local FAISS indices, "
+            f"but got OpenAI model '{model_name}'. Use EMBEDDING_MODEL=BAAI/bge-m3, or implement "
+            "an OpenAI embedding encoder and rebuild both .npy vectors and FAISS indices."
+        )
+
     EMB_DIR.mkdir(parents=True, exist_ok=True)
 
     beans_npy = EMB_DIR / "beans_embeddings.npy"
@@ -52,6 +59,13 @@ def build_all(model_name: str = MODEL_NAME, force: bool = False):
         existing = np.load(npy_path)
         if existing.shape[1] != expected_dim:
             print(f"  Dimension mismatch ({existing.shape[1]} != {expected_dim}), rebuilding.")
+            return True
+        index = faiss.read_index(str(idx_path))
+        if index.d != expected_dim:
+            print(f"  Index dimension mismatch ({index.d} != {expected_dim}), rebuilding.")
+            return True
+        if index.ntotal != existing.shape[0]:
+            print(f"  Index/vector count mismatch ({index.ntotal} != {existing.shape[0]}), rebuilding.")
             return True
         return False
 

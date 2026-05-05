@@ -193,8 +193,17 @@ def response_summary_text(response: CoffeeResponse | None) -> str:
 
 _SOFT_EMBED_MAX_CHARS = 8000
 _SOFT_REF_MIN_UNIT_CHARS = 12
-_RETRIEVAL_SOFT_SIM_LOW = float(os.getenv("RETRIEVAL_RECALL_SOFT_LOW", "0.78"))
-_RETRIEVAL_SOFT_SIM_HIGH = float(os.getenv("RETRIEVAL_RECALL_SOFT_HIGH", "0.92"))
+_RETRIEVAL_SOFT_SIM_LOW = float(os.getenv("RETRIEVAL_RECALL_SOFT_LOW", "0.84"))
+_RETRIEVAL_SOFT_SIM_HIGH = float(os.getenv("RETRIEVAL_RECALL_SOFT_HIGH", "0.96"))
+_RETRIEVAL_SOFT_PARTIAL_CAP = float(os.getenv("RETRIEVAL_RECALL_SOFT_PARTIAL_CAP", "0.75"))
+_RETRIEVAL_SOFT_TOKEN_OVERLAP = float(os.getenv("RETRIEVAL_RECALL_SOFT_TOKEN_OVERLAP", "0.12"))
+_TOKEN_OVERLAP_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,}", flags=re.I)
+_CONTEXT_STOPWORDS = {
+    "about", "and", "article", "bean", "beans", "coffee", "coffees", "content",
+    "country", "date", "description", "flavor", "flavour", "from", "has", "in",
+    "is", "it", "notes", "of", "origin", "processing", "roast", "roaster",
+    "source", "species", "the", "this", "to", "type", "url", "with",
+}
 
 
 def _truncate_for_embed(text: str, max_chars: int = _SOFT_EMBED_MAX_CHARS) -> str:
@@ -226,6 +235,22 @@ def _scale_similarity(sim: float, low: float, high: float) -> float:
     if high <= low:
         return 1.0 if sim >= high else 0.0
     return max(0.0, min(1.0, (sim - low) / (high - low)))
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in _TOKEN_OVERLAP_RE.findall(text or "")
+        if token.lower() not in _CONTEXT_STOPWORDS
+    }
+
+
+def _token_overlap(a: str, b: str) -> float:
+    left = _content_tokens(a)
+    right = _content_tokens(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
 
 
 def _normalize_key(value: str) -> str:
@@ -313,20 +338,27 @@ class SoftRetrievalRecall:
 
     This is closer to IR recall than Ragas ContextRecall: each reference context
     is a target document/passage. Exact URL/name overlap receives full credit;
-    otherwise the metric gives partial credit from embedding similarity.
+    otherwise the metric gives capped partial credit from embedding similarity
+    only when the best match also has enough content-token overlap. The cap and
+    token gate prevent same-domain coffee boilerplate from making every miss
+    look almost correct.
     """
 
-    __slots__ = ("embeddings", "sim_low", "sim_high")
+    __slots__ = ("embeddings", "partial_cap", "sim_low", "sim_high", "token_overlap_min")
 
     def __init__(
         self,
         embeddings: Any,
         sim_low: float = _RETRIEVAL_SOFT_SIM_LOW,
         sim_high: float = _RETRIEVAL_SOFT_SIM_HIGH,
+        partial_cap: float = _RETRIEVAL_SOFT_PARTIAL_CAP,
+        token_overlap_min: float = _RETRIEVAL_SOFT_TOKEN_OVERLAP,
     ):
         self.embeddings = embeddings
         self.sim_low = sim_low
         self.sim_high = sim_high
+        self.partial_cap = max(0.0, min(1.0, partial_cap))
+        self.token_overlap_min = max(0.0, token_overlap_min)
 
     async def ascore(
         self,
@@ -368,8 +400,18 @@ class SoftRetrievalRecall:
             sims = a @ b.T
 
             for i, pos in enumerate(unresolved_positions):
-                max_sim = float(np.max(sims[i]))
-                scores[pos] = _scale_similarity(max_sim, self.sim_low, self.sim_high)
+                best_idx = int(np.argmax(sims[i]))
+                max_sim = float(sims[i, best_idx])
+                overlap = _token_overlap(unresolved_refs[i], contexts[best_idx])
+                if overlap < self.token_overlap_min:
+                    scores[pos] = 0.0
+                    continue
+                overlap_weight = min(1.0, overlap / max(self.token_overlap_min * 2.0, 1e-9))
+                scores[pos] = (
+                    _scale_similarity(max_sim, self.sim_low, self.sim_high)
+                    * self.partial_cap
+                    * overlap_weight
+                )
 
         recall = float(np.mean([s for s in scores if s is not None]))
         recall = max(0.0, min(1.0, recall))

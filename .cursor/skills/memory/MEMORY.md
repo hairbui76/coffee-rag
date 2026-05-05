@@ -4,6 +4,14 @@
 
 ---
 
+### 2026-05-06 — Soft context recall in Ragas eval
+
+- **Category:** progress
+- **Details:** Added embedding-based `context_recall_soft` (mean max cosine sim per ground-truth sentence vs retrieved contexts) alongside strict Ragas LLM `context_recall`. Uses same multilingual embedder as AR (`--ar-embedding-model`, default BAAI/bge-m3). Opt-in via `--metrics ... context_recall_soft`.
+- **Files:** `evaluation/ragas_eval.py`
+
+---
+
 ### 2026-04-27 — Regenerated RAG eval dataset grounded in real data
 
 - **Category:** progress
