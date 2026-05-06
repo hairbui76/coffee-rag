@@ -1,0 +1,15 @@
+\begin{table}[htbp]
+\centering
+\caption{Overall retrieval quality across embedding models and fusion strategies (mean over 600 evaluation cases).}
+\label{tab:compare-overall}
+\begin{tabular}{lrrrrr}
+\toprule
+Metric & MiniLM & MiniLM+RRF & BGE-M3 & BGE-M3+RRF & BGE-M3+RRF+SR \\
+\midrule
+Context Precision & 0.540 & 0.663 & 0.690 & \textbf{0.819} & 0.815 \\
+Context Recall & 0.296 & 0.429 & 0.447 & 0.582 & \textbf{0.719} \\
+Faithfulness & 0.785 & 0.799 & 0.790 & 0.800 & \textbf{0.818} \\
+Answer Relevancy & 0.607 & 0.676 & 0.648 & \textbf{0.693} & 0.693 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,5 @@
+Metric,MiniLM,MiniLM+RRF,BGE-M3,BGE-M3+RRF,BGE-M3+RRF+SR
+Context Precision,0.54,0.663,0.69,0.819,0.815
+Context Recall,0.296,0.429,0.447,0.582,0.719
+Faithfulness,0.785,0.799,0.79,0.8,0.818
+Answer Relevancy,0.607,0.676,0.648,0.693,0.693

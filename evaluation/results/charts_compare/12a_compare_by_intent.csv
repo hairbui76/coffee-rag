@@ -1,0 +1,13 @@
+Intent,Metric,MiniLM,MiniLM+RRF,BGE-M3,BGE-M3+RRF,BGE-M3+RRF+SR
+news_search,Context Precision,0.689,0.816,0.871,0.892,0.889
+news_search,Context Recall,0.542,0.607,0.622,0.65,0.828
+news_search,Faithfulness,0.87,0.892,0.896,0.908,0.913
+news_search,Answer Relevancy,0.578,0.695,0.63,0.664,0.671
+product_search,Context Precision,0.189,0.434,0.268,0.641,0.623
+product_search,Context Recall,0.105,0.418,0.177,0.55,0.617
+product_search,Faithfulness,0.787,0.815,0.768,0.802,0.823
+product_search,Answer Relevancy,0.58,0.718,0.56,0.643,0.657
+similar_search,Context Precision,0.743,0.738,0.93,0.925,0.933
+similar_search,Context Recall,0.243,0.261,0.542,0.547,0.712
+similar_search,Faithfulness,0.699,0.688,0.705,0.69,0.716
+similar_search,Answer Relevancy,0.663,0.616,0.754,0.773,0.752

@@ -1,0 +1,24 @@
+\begin{table}[htbp]
+\centering
+\caption{Retrieval quality by intent across embedding models and fusion strategies.}
+\label{tab:compare-intent}
+\small
+\begin{tabular}{llrrrrr}
+\toprule
+Intent & Metric & MiniLM & MiniLM+RRF & BGE-M3 & BGE-M3+RRF & BGE-M3+RRF+SR \\
+\midrule
+news_search & Context Precision & 0.689 & 0.816 & 0.871 & \textbf{0.892} & 0.889 \\
+ & Context Recall & 0.542 & 0.607 & 0.622 & 0.650 & \textbf{0.828} \\
+ & Faithfulness & 0.870 & 0.892 & 0.896 & 0.908 & \textbf{0.913} \\
+ & Answer Relevancy & 0.578 & \textbf{0.695} & 0.630 & 0.664 & 0.671 \\
+product_search & Context Precision & 0.189 & 0.434 & 0.268 & \textbf{0.641} & 0.623 \\
+ & Context Recall & 0.105 & 0.418 & 0.177 & 0.550 & \textbf{0.617} \\
+ & Faithfulness & 0.787 & 0.815 & 0.768 & 0.802 & \textbf{0.823} \\
+ & Answer Relevancy & 0.580 & \textbf{0.718} & 0.560 & 0.643 & 0.657 \\
+similar_search & Context Precision & 0.743 & 0.738 & 0.930 & 0.925 & \textbf{0.933} \\
+ & Context Recall & 0.243 & 0.261 & 0.542 & 0.547 & \textbf{0.712} \\
+ & Faithfulness & 0.699 & 0.688 & 0.705 & 0.690 & \textbf{0.716} \\
+ & Answer Relevancy & 0.663 & 0.616 & 0.754 & \textbf{0.773} & 0.752 \\
+\bottomrule
+\end{tabular}
+\end{table}
