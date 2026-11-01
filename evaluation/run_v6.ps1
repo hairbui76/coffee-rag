@@ -1,5 +1,5 @@
 # Full v6 experiment on Windows PowerShell: 4 configurations x 3 runs + 3 soft-recall runs.
-# Resumable (every job uses --limit 0). Needs .env with OPENAI_API_KEY. No GPU needed.
+# Resumable (every job uses --limit 0). Needs .env with ANTHROPIC_API_KEY (or OPENAI_API_KEY). No GPU needed.
 #
 #   powershell -ExecutionPolicy Bypass -File evaluation\run_v6.ps1
 #   powershell -ExecutionPolicy Bypass -File evaluation\run_v6.ps1 -Only bge -Runs 1,2

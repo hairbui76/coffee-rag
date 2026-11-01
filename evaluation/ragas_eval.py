@@ -599,8 +599,10 @@ def build_metrics(
             if judge_provider == "anthropic":
                 from anthropic import AsyncAnthropic
 
+                # max_retries=6: back off politely on 429 instead of failing the case.
                 llm = llm_factory(evaluator_model, provider="anthropic",
-                                  client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")), **kwargs)
+                                  client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), max_retries=6),
+                                  **kwargs)
                 # Ragas sets top_p=0.1 by default; Anthropic rejects temperature and top_p together.
                 if hasattr(llm, "model_args"):
                     llm.model_args.pop("top_p", None)

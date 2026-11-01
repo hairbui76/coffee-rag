@@ -43,7 +43,7 @@ Mục tiêu: để Kaggle chạy `evaluation/run_v6.sh` (4 cấu hình × N run 
 
 **Chạy thật:** **Save Version** (góc trên phải) → **Save & Run All (Commit)** → Save. Kaggle chạy nền trên máy chủ, tối đa 12 giờ, không cần mở trình duyệt. Theo dõi tiến độ ở trang notebook → tab **Logs** của version đang chạy.
 
-Thời gian ước tính với `WORKERS=8`: 1 run full ≈ 25 đến 40 phút, 12 run ≈ 6 đến 8 giờ, soft recall trên GPU vài phút mỗi run. `RUNS="1 2 3"` với `ONLY="all"` vừa trong 12 giờ. Nếu dùng `RUNS="1 2 3 4 5"`, tách làm hai version: một với `ONLY="bge"`, một với `ONLY="minilm"`.
+Thời gian ước tính với `WORKERS=8` (Build tier, 5M token/phút): 1 run full ≈ 25 đến 40 phút, 12 run ≈ 6 đến 8 giờ. Nếu log có nhiều `429`, đặt `WORKERS="4"`, soft recall trên GPU vài phút mỗi run. `RUNS="1 2 3"` với `ONLY="all"` vừa trong 12 giờ. Nếu dùng `RUNS="1 2 3 4 5"`, tách làm hai version: một với `ONLY="bge"`, một với `ONLY="minilm"`.
 
 ## Khi phiên kết thúc hoặc bị cắt
 

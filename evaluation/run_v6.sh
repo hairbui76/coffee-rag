@@ -6,7 +6,7 @@
 #   ONLY=bge bash evaluation/run_v6.sh   # skip the MiniLM configurations
 #   RUNS="1 2" bash evaluation/run_v6.sh # fewer repetitions
 #
-# Needs .env with OPENAI_API_KEY. GPU is optional: query encoding of 600 questions
+# Needs .env with ANTHROPIC_API_KEY (or OPENAI_API_KEY). GPU is optional: query encoding of 600 questions
 # on CPU takes a few minutes; only building a new FAISS index is slow on CPU.
 set -euo pipefail
 cd "$(dirname "$0")/.."

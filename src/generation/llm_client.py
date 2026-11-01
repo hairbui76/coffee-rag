@@ -60,7 +60,7 @@ class AnthropicChatClient:
     def __init__(self, api_key: str):
         from anthropic import Anthropic  # imported lazily so OpenAI/Ollama users need no SDK
 
-        self._client = Anthropic(api_key=api_key)
+        self._client = Anthropic(api_key=api_key, max_retries=6)  # polite backoff on 429
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
         self.beta = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=self._parse)))
 
