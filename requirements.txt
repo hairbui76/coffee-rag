@@ -9,7 +9,8 @@ streamlit>=1.30
 pyarrow>=14.0
 torchvision>=0.26.0
 python-dotenv>=1.2.2
-ragas>=0.4.3
+ragas>=0.4.3,<0.5
+langchain-community<0.4   # 0.4 removed ChatVertexAI, which ragas 0.4.3 imports
 matplotlib>=3.10.9
 seaborn>=0.3.12
 anthropic>=0.40
