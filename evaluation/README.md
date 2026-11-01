@@ -302,7 +302,7 @@ Mỗi case trong dataset JSON:
 
 ### Intent distribution
 
-**Dataset v5** (template-based, 600 cases):
+**Dataset v5** (`ragas_eval_dataset.json`, sinh bằng LLM và retrieval-grounded, 600 cases):
 
 | Intent | Cases | Metrics đánh giá |
 |--------|------:|-------------------|
@@ -312,9 +312,21 @@ Mỗi case trong dataset JSON:
 
 **Difficulty:** 30% easy, 45% medium, 25% hard
 
-**Language:** 60% Vietnamese, 40% English
+**Language (đếm thực tế):** 492 vi, 108 en. Tài liệu cũ ghi 60/40 là sai.
 
 > **Note:** comparison, knowledge_qa, exploration, edge_case đã được loại bỏ trong v5. Dataset mới chỉ giữ 3 retrieval intents để tập trung đánh giá hiệu quả retrieval pipeline.
+
+> **Cảnh báo về v5:** `ground_truth` và `ground_truth_contexts` của v5 được viết từ chính kết quả `rag.retrieve()` (Phase 3 bên dưới). Vì vậy context recall và context precision đo trên v5 là **vòng tròn**: reference chỉ chứa những gì retriever đã trả về. Dùng v5 để debug, không dùng cho số liệu công bố.
+
+**Dataset v6** (`ragas_eval_dataset_v6.json`, `generate_dataset_v6.py`): độc lập retriever, template song ngữ, không gọi LLM. Mỗi case có `relevant_ids` là **toàn bộ** tập sản phẩm (hoặc bài báo) thỏa ràng buộc metadata, `n_relevant`, `exclude_ids` (seed của similar_search), và `ground_truth` dạng template nêu 2 sản phẩm trong tập đó. 300 vi / 300 en, 180 easy / 270 medium / 150 hard. Quy tắc relevance và độ khó nằm ở docstring đầu file.
+
+| Intent | Relevance set R | Độ khó |
+|---|---|---|
+| product_search | mọi bean có country = C, flavor chứa F, (roast = R), (processing chứa P) | easy {C, F} với \|R\| ≥ 15; medium {C, R, F} với \|R\| ≥ 4; hard {C, R, F, P} với \|R\| ≥ 2 |
+| similar_search | mọi bean ≠ seed, cùng country, cùng roast, ≥ 1 flavor chung | easy \|R\| ≥ 20; medium 6 đến 19; hard 2 đến 5 |
+| news_search | bài báo nguồn (easy, medium) hoặc mọi bài có tên tổ chức trong title (hard) | easy = title, medium = câu đầu summary, hard = tên tổ chức |
+
+Với v6, `ragas_eval.py` tính thêm **Hit@k, Recall@k = hits / min(\|R\|, k), Precision@k, MRR** theo ID tài liệu, không cần judge. Đây là mốc neo để so các metric dùng LLM hoặc embedding.
 
 ### Cách generate dataset
 
@@ -522,13 +534,15 @@ Flavor đã được semantic search xử lý tốt (embedding space capture sim
 
 3. **Entity extraction fail** — Nếu M1 extract sai origin hoặc roast → `_prioritize_matching` dùng entities sai → prioritize sai beans
 
-**Ví dụ thực tế từ v12 (100 cases):**
+**Ví dụ lịch sử (bản dataset v12 cũ, 100 cases, không còn dùng):**
 
 | Outcome | Cases | Nguyên nhân |
 |---|---:|---|
 | CP = 1.0 | 59 (59%) | Tất cả 5 beans đều relevant |
 | CP = 0.5-0.75 | 20 (20%) | 2-3/5 beans relevant (partial match) |
 | CP = 0 | 9 (9%) | Combo cực hiếm, không đủ beans match |
+
+Số liệu hiện hành nằm trong `evaluation/results/tables_v5/REPORT.md` (v5, 600 cases) và `evaluation/results/v6/tables/REPORT.md` (v6) do `aggregate_runs.py` sinh ra.
 
 ### Code tham khảo
 
@@ -554,6 +568,62 @@ def _prioritize_matching(beans: pd.DataFrame, entities: dict, top_k: int) -> pd.
     beans = beans.sort_values(["_match_score", "_orig_rank"], ascending=[False, True])
     return beans.head(top_k).drop(columns=["_match_score", "_orig_rank"]).reset_index(drop=True)
 ```
+
+---
+
+## Soft recall, lặp lại thí nghiệm và gán nhãn người
+
+### Identity-anchored soft recall (`retrieval_recall_soft`, cờ `--soft`)
+
+Tên dùng trong bài: **identity-anchored soft recall**. Không dùng tên "semantic recall", vì Kuffo et al. (SIGIR 2026) đã dùng tên đó cho một metric khác về ANN search.
+
+Hai công thức, chung một bộ ngưỡng (`sim_low=0.84`, `sim_high=0.96`, `partial_cap=0.75`, `token_overlap_min=0.12`, đổi được qua biến môi trường `RETRIEVAL_RECALL_SOFT_*`):
+
+- **Theo reference (v5, không có `relevant_ids`):** trung bình trên các `reference_contexts` của điểm mỗi reference nhận được từ danh sách retrieved. Trùng URL hoặc tên bean + roaster → 1.0. Nếu không, điểm một phần = scale(cosine, low, high) × cap × trọng số token overlap, bằng 0 khi overlap dưới ngưỡng.
+- **Soft Recall@k theo retrieved (v6, có `relevant_ids`):** chấm từng tài liệu trong top-k: 1.0 nếu ID thuộc R, nếu không thì điểm một phần như trên so với exemplar gần nhất của R. Điểm = tổng / min(\|R\|, k), cắt về 1. Với `partial_cap = 0` metric trùng Recall@k.
+
+Để biết metric này có **đúng hơn** RAGAS context recall hay chỉ **cao hơn**, cần so với nhãn người (mục dưới). Chưa có nhãn người thì chỉ được nói "cho điểm cao hơn".
+
+### Chạy chỉ với Anthropic API key
+
+Không cần OpenAI. Ba chỗ từng dính OpenAI đã có đường thay thế:
+
+| Thành phần | Cấu hình |
+|---|---|
+| Entity extraction + sinh câu trả lời | `LLM_PROVIDER=anthropic`, `ANTHROPIC_MODEL=claude-haiku-5-5` (adapter trong `src/generation/llm_client.py`, structured output qua tool use) |
+| Judge RAGAS | `RAGAS_JUDGE_PROVIDER=anthropic`, `RAGAS_EVALUATOR_MODEL=claude-haiku-5-5` (ragas 0.4 có adapter Anthropic sẵn; tự chọn anthropic khi chỉ có `ANTHROPIC_API_KEY`) |
+| Embedding cho answer relevancy, soft recall, sweep | `RAGAS_AR_EMBEDDING_MODEL=BAAI/bge-m3` chạy local (mặc định), không cần key |
+
+Trong bài phải ghi rõ judge là Claude Haiku và mọi cấu hình đều chấm bằng cùng một judge. Không trộn số liệu chấm bằng gpt-4o-mini (v5 cũ) với số liệu chấm bằng Claude.
+
+### Lặp lại và kiểm định
+
+`ragas_eval.py` nhận `--run-id`, `--seed`, `--judge-temperature` (mặc định 0) và ghi cột `hit_at_k`, `recall_at_k`, `precision_at_k`, `mrr`, `n_relevant`, `n_hits` cho dataset có `relevant_ids`. Mỗi run cũng ghi `<out>_contexts.jsonl` (contexts đã retrieve theo case) cho tool gán nhãn và sweep.
+
+```bash
+bash evaluation/run_v6.sh                                      # 4 cấu hình × 3 run + 3 run soft
+python -m evaluation.aggregate_runs --run "BGE-M3" a1.csv a2.csv a3.csv --run "BGE-M3+RRF" b1.csv b2.csv b3.csv \
+    --soft-file s1.csv s2.csv s3.csv --soft-label "BGE-M3+RRF" --baseline "BGE-M3" --metric-table "BGE-M3+RRF" \
+    --out evaluation/results/v6/tables
+```
+
+`aggregate_runs.py` xuất hai bảng riêng (CSV + LaTeX booktabs): bảng **hệ thống** (cùng metric cho mọi dòng, mean ± SD qua các run, Wilcoxon signed-rank và bootstrap 95% CI so với baseline trên điểm từng case) và bảng **metric** (một hệ thống, nhiều định nghĩa recall cạnh nhau, kèm Spearman giữa các metric). Không bao giờ gộp hai bảng này.
+
+### Gán nhãn người và tương quan
+
+```bash
+python -m evaluation.annotation.sample_cases --contexts evaluation/results/v6/bge_rrf_r1_contexts.jsonl \
+    --out evaluation/annotation/annotation_sample.json --per-stratum 10      # 18 strata × 10 = 180 case
+# mở evaluation/annotation/annotate.html, nạp annotation_sample.json, chấm, Export → labels_<tên>.json
+python -m evaluation.annotation.analyze_annotations --labels "evaluation/annotation/labels_*.json" \
+    --results evaluation/results/v6/bge_rrf_r1.csv --soft-results evaluation/results/v6/bge_rrf_soft_r1.csv \
+    --out evaluation/annotation/report
+python -m evaluation.sweep_soft_recall --contexts evaluation/results/v6/bge_rrf_r1_contexts.jsonl \
+    --results evaluation/results/v6/bge_rrf_r1.csv --annotations "evaluation/annotation/labels_*.json" \
+    --out evaluation/results/v6/sweep
+```
+
+Nhãn: mỗi kết quả 0/1/2 (không liên quan / một phần / đúng ý), mỗi case một điểm coverage 0/1/2 cho cả tập top-k. `analyze_annotations.py` báo Cohen's κ (thường và quadratic-weighted) giữa hai người, rồi Spearman ρ và Kendall τ của từng metric tự động so với coverage (loại recall) và trung bình relevance (loại precision). `sweep_soft_recall.py` quét lưới ngưỡng offline sau một lần cache embedding và báo ρ với nhãn người cho từng cấu hình ngưỡng.
 
 ---
 

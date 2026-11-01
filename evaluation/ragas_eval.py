@@ -58,6 +58,46 @@ DEFAULT_METRICS = {
     "retrieval": ["context_precision", "context_recall"],
 }
 
+# ID-based IR metrics computed from ``relevant_ids`` in the dataset (v6+).
+# They need no LLM and no embeddings, so they serve as the anchor that the
+# LLM-judged and embedding-based metrics are compared against.
+IR_METRIC_COLUMNS = ["hit_at_k", "recall_at_k", "precision_at_k", "mrr", "n_relevant", "n_hits"]
+
+
+def ir_metrics(retrieved_ids: list[str], relevant_ids: list[str], k: int,
+               exclude_ids: list[str] | None = None) -> dict[str, float | int]:
+    """Hit@k, Recall@k (|hits| / min(|R|, k)), Precision@k, MRR over document ids.
+
+    Duplicates in ``retrieved_ids`` (several chunks of one article) count once,
+    at their first rank. ``exclude_ids`` (the seed bean of a similar_search
+    query) are removed from the ranking before scoring, so returning the seed
+    neither helps nor hurts.
+    """
+    relevant = {str(r) for r in relevant_ids if r}
+    excluded = {str(e) for e in (exclude_ids or []) if e}
+    seen: set[str] = set()
+    ranked: list[str] = []
+    for rid in retrieved_ids:
+        rid = str(rid)
+        if not rid or rid in excluded or rid in seen:
+            continue
+        seen.add(rid)
+        ranked.append(rid)
+    ranked = ranked[:k]
+    if not relevant:
+        return {name: float("nan") for name in ["hit_at_k", "recall_at_k", "precision_at_k", "mrr"]} | {
+            "n_relevant": 0, "n_hits": 0}
+    hits = [i for i, rid in enumerate(ranked) if rid in relevant]
+    n_hits = len(hits)
+    return {
+        "hit_at_k": 1.0 if n_hits else 0.0,
+        "recall_at_k": n_hits / min(len(relevant), k),
+        "precision_at_k": n_hits / k,
+        "mrr": (1.0 / (hits[0] + 1)) if hits else 0.0,
+        "n_relevant": len(relevant),
+        "n_hits": n_hits,
+    }
+
 RETRIEVAL_INTENTS = {"product_search", "similar_search", "news_search"}
 CONTEXT_METRICS = {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
 OPENAI_LLM_METRICS = {"faithfulness", "context_precision", "answer_relevancy"}
@@ -77,25 +117,41 @@ def _metrics_for_intent(intent: str, all_metrics: dict[str, Any]) -> dict[str, A
     return {k: v for k, v in all_metrics.items() if k not in CONTEXT_METRICS}
 
 
-def _uses_openai(
+def _required_env_keys(
     metric_names: list[str],
     embedding_model: str,
     ar_embedding_model: str | None,
     soft_recall: bool,
-) -> bool:
-    if any(name in OPENAI_LLM_METRICS for name in metric_names):
-        return True
-
-    if "context_recall" in metric_names and not soft_recall:
-        return True
-
+    judge_provider: str,
+) -> set[str]:
+    """Which API keys this run needs: the judge's provider key, and OPENAI_API_KEY
+    only when an OpenAI embedding model is used (a HuggingFace model id with a '/'
+    runs locally and needs no key)."""
+    keys: set[str] = set()
+    needs_judge = any(name in OPENAI_LLM_METRICS for name in metric_names) or (
+        "context_recall" in metric_names and not soft_recall
+    )
+    if needs_judge:
+        keys.add("ANTHROPIC_API_KEY" if judge_provider == "anthropic" else "OPENAI_API_KEY")
     if any(name in SOFT_EMBEDDING_METRICS for name in metric_names) or (
         "context_recall" in metric_names and soft_recall
-    ):
+    ) or "answer_relevancy" in metric_names:
         model = ar_embedding_model or embedding_model
-        return "/" not in model
+        if "/" not in model:
+            keys.add("OPENAI_API_KEY")
+    return keys
 
-    return False
+
+def _default_judge_provider() -> str:
+    env = os.getenv("RAGAS_JUDGE_PROVIDER", "").lower()
+    if env in ("openai", "anthropic"):
+        return env
+    if os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        return "anthropic"
+    return "openai"
+
+
+DEFAULT_JUDGE_MODEL = {"openai": "gpt-4o-mini", "anthropic": "claude-haiku-5-5"}
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -333,15 +389,35 @@ class SoftContextRecall:
         return SimpleNamespace(value=recall)
 
 
-class SoftRetrievalRecall:
-    """Recall against dataset ground_truth_contexts.
+def _partial_credit(max_sim: float, overlap: float, sim_low: float, sim_high: float,
+                    partial_cap: float, token_overlap_min: float) -> float:
+    """Capped partial credit for a near miss: similarity scaled to [0, 1] between
+    ``sim_low`` and ``sim_high``, times ``partial_cap``, times a token-overlap weight
+    that reaches 1 at twice ``token_overlap_min``. Zero below the overlap gate."""
+    if overlap < token_overlap_min:
+        return 0.0
+    overlap_weight = min(1.0, overlap / max(token_overlap_min * 2.0, 1e-9))
+    return _scale_similarity(max_sim, sim_low, sim_high) * partial_cap * overlap_weight
 
-    This is closer to IR recall than Ragas ContextRecall: each reference context
-    is a target document/passage. Exact URL/name overlap receives full credit;
-    otherwise the metric gives capped partial credit from embedding similarity
-    only when the best match also has enough content-token overlap. The cap and
-    token gate prevent same-domain coffee boilerplate from making every miss
-    look almost correct.
+
+class SoftRetrievalRecall:
+    """Identity-anchored soft recall (``retrieval_recall_soft``).
+
+    Two formulations share one set of thresholds:
+
+    * **Reference-oriented** (dataset v5, no ``relevant_ids``): mean over the
+      stored ``reference_contexts`` of the credit each one receives from the
+      retrieved list. Exact URL/name overlap gives 1.0, otherwise capped partial
+      credit from embedding similarity gated by content-token overlap.
+
+    * **Retrieved-oriented, Soft Recall@k** (dataset v6+, ``relevant_ids``
+      present): credit each of the top-k retrieved documents, 1.0 when its id is
+      in the relevant set R, otherwise the same capped partial credit measured
+      against the nearest stored exemplar of R. Score = sum of credits divided by
+      min(|R|, k), clipped to 1. With partial_cap = 0 this equals Recall@k.
+
+    The cap and token gate prevent same-domain coffee boilerplate from making
+    every miss look almost correct.
     """
 
     __slots__ = ("embeddings", "partial_cap", "sim_low", "sim_high", "token_overlap_min")
@@ -366,6 +442,10 @@ class SoftRetrievalRecall:
         user_input: str,
         reference_contexts: list[str],
         retrieved_contexts: list[str],
+        retrieved_ids: list[str] | None = None,
+        relevant_ids: list[str] | None = None,
+        exclude_ids: list[str] | None = None,
+        k: int | None = None,
     ) -> Any:
         del user_input
         refs = [str(c).strip() for c in reference_contexts if c and str(c).strip()]
@@ -375,6 +455,10 @@ class SoftRetrievalRecall:
         contexts = [str(c).strip() for c in retrieved_contexts if c and str(c).strip()]
         if not contexts:
             return SimpleNamespace(value=0.0)
+
+        if relevant_ids:
+            return await self._score_at_k(refs, contexts, retrieved_ids or [], relevant_ids,
+                                          exclude_ids or [], k or len(contexts))
 
         retrieved_keys = set().union(*(_context_keys(c) for c in contexts))
         scores: list[float | None] = []
@@ -403,19 +487,52 @@ class SoftRetrievalRecall:
                 best_idx = int(np.argmax(sims[i]))
                 max_sim = float(sims[i, best_idx])
                 overlap = _token_overlap(unresolved_refs[i], contexts[best_idx])
-                if overlap < self.token_overlap_min:
-                    scores[pos] = 0.0
-                    continue
-                overlap_weight = min(1.0, overlap / max(self.token_overlap_min * 2.0, 1e-9))
-                scores[pos] = (
-                    _scale_similarity(max_sim, self.sim_low, self.sim_high)
-                    * self.partial_cap
-                    * overlap_weight
-                )
+                scores[pos] = _partial_credit(max_sim, overlap, self.sim_low, self.sim_high,
+                                              self.partial_cap, self.token_overlap_min)
 
         recall = float(np.mean([s for s in scores if s is not None]))
         recall = max(0.0, min(1.0, recall))
         return SimpleNamespace(value=recall)
+
+    async def _score_at_k(self, refs: list[str], contexts: list[str], retrieved_ids: list[str],
+                          relevant_ids: list[str], exclude_ids: list[str], k: int) -> Any:
+        """Retrieved-oriented Soft Recall@k against a set-valued relevance set."""
+        relevant = {str(r) for r in relevant_ids if r}
+        excluded = {str(e) for e in exclude_ids if e}
+        # Pair each retrieved context with its id (same order as the pipeline output).
+        pairs = list(zip(contexts, retrieved_ids)) if len(retrieved_ids) >= len(contexts) \
+            else [(c, "") for c in contexts]
+        seen: set[str] = set()
+        ranked: list[tuple[str, str]] = []
+        for ctx, rid in pairs:
+            rid = str(rid)
+            if rid and (rid in excluded or rid in seen):
+                continue
+            if rid:
+                seen.add(rid)
+            ranked.append((ctx, rid))
+        ranked = ranked[:k]
+        if not ranked:
+            return SimpleNamespace(value=0.0)
+
+        credits: list[float | None] = [1.0 if rid in relevant else None for _, rid in ranked]
+        misses = [i for i, c in enumerate(credits) if c is None]
+        if misses:
+            ctx_texts = [_truncate_for_embed(ranked[i][0]) for i in misses]
+            ref_texts = [_truncate_for_embed(r) for r in refs]
+            ctx_emb = await self.embeddings.aembed_texts(ctx_texts)
+            ref_emb = await self.embeddings.aembed_texts(ref_texts)
+            a = _l2_normalize_rows(np.atleast_2d(np.asarray(ctx_emb, dtype=np.float64)))
+            b = _l2_normalize_rows(np.atleast_2d(np.asarray(ref_emb, dtype=np.float64)))
+            sims = a @ b.T
+            for row, i in enumerate(misses):
+                best = int(np.argmax(sims[row]))
+                overlap = _token_overlap(ranked[i][0], refs[best])
+                credits[i] = _partial_credit(float(sims[row, best]), overlap, self.sim_low,
+                                             self.sim_high, self.partial_cap, self.token_overlap_min)
+        denom = max(1, min(len(relevant), k))
+        recall = sum(c for c in credits if c is not None) / denom
+        return SimpleNamespace(value=max(0.0, min(1.0, recall)))
 
 
 def load_existing_ids(csv_path: Path) -> set[str]:
@@ -458,12 +575,16 @@ def build_metrics(
     embedding_model: str,
     ar_embedding_model: str | None = None,
     soft_recall: bool = False,
+    judge_temperature: float | None = 0.0,
+    judge_provider: str = "openai",
+    judge_max_tokens: int = 2048,
 ):
     client = None
     llm = None
     embeddings = None
 
     def get_client():
+        """OpenAI client, used for OpenAI embeddings and for the judge when provider=openai."""
         nonlocal client
         if client is None:
             client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -472,7 +593,19 @@ def build_metrics(
     def get_llm():
         nonlocal llm
         if llm is None:
-            llm = llm_factory(evaluator_model, client=get_client())
+            kwargs: dict[str, Any] = {"max_tokens": judge_max_tokens}
+            if judge_temperature is not None:
+                kwargs["temperature"] = judge_temperature
+            if judge_provider == "anthropic":
+                from anthropic import AsyncAnthropic
+
+                llm = llm_factory(evaluator_model, provider="anthropic",
+                                  client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")), **kwargs)
+                # Ragas sets top_p=0.1 by default; Anthropic rejects temperature and top_p together.
+                if hasattr(llm, "model_args"):
+                    llm.model_args.pop("top_p", None)
+            else:
+                llm = llm_factory(evaluator_model, client=get_client(), **kwargs)
         return llm
 
     def get_embeddings():
@@ -551,6 +684,10 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
                 user_input=sample["question"],
                 reference_contexts=sample["reference_contexts"],
                 retrieved_contexts=sample["retrieved_contexts"],
+                retrieved_ids=sample.get("retrieved_ids"),
+                relevant_ids=sample.get("relevant_ids"),
+                exclude_ids=sample.get("exclude_ids"),
+                k=sample.get("k_for_ir"),
             )
         else:
             result = await metric.ascore(
@@ -569,6 +706,10 @@ async def async_score_metric(metric_name: str, metric: Any, sample: dict[str, An
             user_input=sample["question"],
             reference_contexts=sample["reference_contexts"],
             retrieved_contexts=sample["retrieved_contexts"],
+            retrieved_ids=sample.get("retrieved_ids"),
+            relevant_ids=sample.get("relevant_ids"),
+            exclude_ids=sample.get("exclude_ids"),
+            k=sample.get("k_for_ir"),
         )
     elif metric_name == "answer_relevancy":
         result = await metric.ascore(
@@ -665,6 +806,22 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         case.get("ground_truth_contexts", []),
     )
 
+    # Document ids of what was retrieved, in rank order, for the ID-based IR metrics.
+    retrieved_ids: list[str] = []
+    if case_intent in PRODUCT_INTENTS:
+        if beans is not None and not getattr(beans, "empty", True) and "product_url" in beans.columns:
+            retrieved_ids = [str(u) for u in beans["product_url"].tolist()]
+        k_for_ir = args.top_k_beans
+    elif case_intent in NEWS_INTENTS:
+        if news is not None and not getattr(news, "empty", True) and "article_url" in news.columns:
+            retrieved_ids = [str(u) for u in news["article_url"].tolist()]
+        k_for_ir = args.top_k_news
+    else:
+        k_for_ir = args.top_k_beans
+    ir = {}
+    if case.get("relevant_ids"):
+        ir = ir_metrics(retrieved_ids, case["relevant_ids"], k_for_ir, case.get("exclude_ids"))
+
     response = None
     if args.mode == "full":
         messages = build_prompt(question, ctx["beans"], ctx["news"])
@@ -677,6 +834,11 @@ def retrieve_one(rag: CoffeeRAG, case: dict[str, Any], args: argparse.Namespace)
         "response_summary": response_summary_text(response),
         "retrieved_contexts": retrieved_contexts,
         "reference_contexts": reference_contexts,
+        "retrieved_ids": retrieved_ids,
+        "relevant_ids": case.get("relevant_ids", []),
+        "exclude_ids": case.get("exclude_ids", []),
+        "k_for_ir": k_for_ir,
+        "ir": ir,
         "intent": ctx.get("intent", ""),
         "entities": ctx.get("entities", {}),
         "bean_count": bean_count,
@@ -724,6 +886,11 @@ def log_sample(
         val = scores.get(name)
         if val not in ("", None):
             score_parts.append(f"{name}={val:.3f}")
+
+    ir = sample.get("ir") or {}
+    if ir and ir.get("recall_at_k") == ir.get("recall_at_k"):  # not NaN
+        score_parts.append(f"R@k={ir['recall_at_k']:.2f}")
+        score_parts.append(f"hits={ir['n_hits']}/{ir['n_relevant']}")
 
     score_str = "  ".join(score_parts) if score_parts else "no scores"
     tag = f"[{index}/{total}]"
@@ -776,8 +943,11 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
             if name in {"context_precision", "context_recall", "context_recall_soft", "retrieval_recall_soft"}
         ]
 
-    if _uses_openai(metric_names, args.embedding_model, args.ar_embedding_model, args.soft) and not os.environ.get("OPENAI_API_KEY"):
-        raise ValueError("OPENAI_API_KEY is required for selected Ragas/OpenAI-backed metrics.")
+    missing = [k for k in _required_env_keys(metric_names, args.embedding_model, args.ar_embedding_model,
+                                             args.soft, args.judge_provider) if not os.environ.get(k)]
+    if missing:
+        raise ValueError(f"Missing {', '.join(missing)} for the selected metrics "
+                         f"(judge provider = {args.judge_provider}, embeddings = {args.ar_embedding_model or args.embedding_model}).")
 
     skip_ids = load_existing_ids(args.out) if args.limit == 0 else None
     cases = load_cases(args.dataset, args.limit, args.offset, args.intent, args.language, skip_ids=skip_ids)
@@ -785,18 +955,27 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
         print("No cases matched filters.")
         return []
 
+    if args.seed is not None:
+        import random as _random
+        _random.seed(args.seed)
+        np.random.seed(args.seed)
+
     metrics = build_metrics(
         metric_names,
         args.evaluator_model,
         args.embedding_model,
         ar_embedding_model=args.ar_embedding_model,
         soft_recall=args.soft,
+        judge_temperature=args.judge_temperature,
+        judge_provider=args.judge_provider,
+        judge_max_tokens=args.judge_max_tokens,
     )
     rag = CoffeeRAG()
     total = len(cases)
     stats = RunningStats()
     semaphore = asyncio.Semaphore(args.workers)
     rows: list[dict[str, Any]] = [None] * total  # type: ignore[list-item]
+    context_dump: list[dict[str, Any] | None] = [None] * total
     t_start = time.perf_counter()
 
     ZERO_PRECISION_STOP_RATIO = 0.2
@@ -809,13 +988,24 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"  Ragas evaluation  |  mode={args.mode}  metrics={metric_names}")
     if args.soft and "context_recall" in metric_names:
         print("  soft recall: context_recall uses retrieval_recall_soft implementation")
-    print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  evaluator={args.evaluator_model}")
+    print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  "
+          f"evaluator={args.judge_provider}:{args.evaluator_model}")
     print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
-    early_stop_enabled = (
-        args.use_rrf
-        and "context_precision" in metric_names
-        and "retrieval_recall_soft" not in metric_names
-    )
+    print(f"  run_id={args.run_id or '-'}  seed={args.seed if args.seed is not None else '-'}  "
+          f"judge_temperature={args.judge_temperature}  rrf={args.use_rrf}")
+    n_with_ids = sum(1 for c in cases if c.get("relevant_ids"))
+    print(f"  ID-based IR metrics: {n_with_ids}/{total} cases carry relevant_ids")
+    if args.early_stop is None:
+        # Auto: the v6 dataset carries set-valued relevance, where a low
+        # context_precision is a finding rather than a broken pipeline.
+        early_stop_enabled = (
+            args.use_rrf
+            and "context_precision" in metric_names
+            and "retrieval_recall_soft" not in metric_names
+            and n_with_ids == 0
+        )
+    else:
+        early_stop_enabled = bool(args.early_stop)
     if early_stop_enabled:
         print(f"  early stop: context_precision=0 >= {zero_precision_threshold} retrieval cases ({ZERO_PRECISION_STOP_RATIO:.0%} of {retrieval_case_count})")
     else:
@@ -856,10 +1046,30 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "response": sample["response"],
                 "reference": sample["reference"],
                 **{name: scores.get(name, "") for name in metric_names},
+                **{name: sample["ir"].get(name, "") for name in IR_METRIC_COLUMNS},
+                "pipeline_intent": sample.get("intent", ""),
+                "run_id": args.run_id or "",
+                "seed": args.seed if args.seed is not None else "",
                 "error": scores.get("error", ""),
                 "elapsed_s": round(elapsed, 1),
             }
             rows[index] = row
+            context_dump[index] = {
+                "id": case.get("id", ""),
+                "intent": case.get("intent", ""),
+                "difficulty": case.get("difficulty", ""),
+                "language": case.get("language", ""),
+                "question": case["question"],
+                "reference": sample["reference"],
+                "retrieved_contexts": sample["retrieved_contexts"],
+                "retrieved_ids": sample["retrieved_ids"],
+                "reference_contexts": sample["reference_contexts"],
+                "relevant_ids": case.get("relevant_ids", []),
+                "exclude_ids": case.get("exclude_ids", []),
+                "entities": sample.get("entities", {}),
+                "pipeline_intent": sample.get("intent", ""),
+                "response": sample["response"],
+            }
 
             log_sample(index + 1, total, case, sample, scores, elapsed, args.verbose, stats)
 
@@ -877,6 +1087,11 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     total_time = time.perf_counter() - t_start
     completed = [r for r in rows if r is not None]
+    if args.contexts_out:
+        write_contexts(
+            [c for c in context_dump if c is not None], args.contexts_out,
+            merge_existing=(args.limit == 0),
+        )
     if stop_event.is_set():
         print(f"\nStopped early after {len(completed)}/{total} cases. "
               f"Total time: {total_time:.1f}s")
@@ -930,6 +1145,27 @@ def write_responses(rows: list[dict[str, Any]], path: Path) -> None:
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
 
+def write_contexts(entries: list[dict[str, Any]], path: Path, merge_existing: bool = False) -> None:
+    """Dump retrieved contexts per case as JSON lines (annotation tool, threshold sweep)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, dict[str, Any]] = {}
+    if merge_existing and path.exists():
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        old = json.loads(line)
+                        merged[old.get("id", "")] = old
+                    except json.JSONDecodeError:
+                        continue
+    for e in entries:
+        merged[e.get("id", "")] = e
+    with path.open("w", encoding="utf-8") as f:
+        for e in merged.values():
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+
 def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -952,6 +1188,10 @@ def write_csv(rows: list[dict[str, Any]], path: Path, merge_existing: bool = Fal
         "context_recall_soft",
         "faithfulness",
         "answer_relevancy",
+        *IR_METRIC_COLUMNS,
+        "pipeline_intent",
+        "run_id",
+        "seed",
     ]
     tail = ["response", "reference", "error"]
     used = set(preferred + metric_cols + tail)
@@ -974,6 +1214,10 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
             "retrieval_recall_soft",
             "context_recall_soft",
             "answer_relevancy",
+            "hit_at_k",
+            "recall_at_k",
+            "precision_at_k",
+            "mrr",
         )
         if any(row.get(name) not in ("", None) for row in rows)
     ]
@@ -1056,8 +1300,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4, help="Max concurrent samples scored in parallel.")
     parser.add_argument("--responses-out", type=Path, default=None,
                         help="Output JSON file for question-response pairs. Defaults to <out>_responses.json.")
+    parser.add_argument("--contexts-out", type=Path, default=None,
+                        help="JSONL dump of retrieved contexts per case (for annotation and threshold "
+                             "sweeps). Defaults to <out>_contexts.jsonl. Pass '' to disable.")
+    parser.add_argument("--early-stop", action=argparse.BooleanOptionalAction, default=None,
+                        help="Stop when >=20%% of retrieval cases have context_precision=0. "
+                             "Default: on for datasets without relevant_ids, off otherwise.")
+    parser.add_argument("--run-id", default="",
+                        help="Label for this run (e.g. r1, r2, r3). Stored in every row.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed for python/numpy RNGs in this process. Stored in every row.")
+    parser.add_argument("--judge-temperature", type=float, default=0.0,
+                        help="Sampling temperature for the Ragas judge LLM (default 0). "
+                             "Use -1 to leave the provider default.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show entities, context counts, running averages per sample.")
-    parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL", "gpt-4o-mini"))
+    parser.add_argument("--judge-provider", choices=["openai", "anthropic"], default=_default_judge_provider(),
+                        help="Provider of the Ragas judge LLM. Default: RAGAS_JUDGE_PROVIDER, else anthropic "
+                             "when only ANTHROPIC_API_KEY is set, else openai.")
+    parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL") or None,
+                        help="Judge model id. Default: gpt-4o-mini (openai) or claude-haiku-5-5 (anthropic).")
+    parser.add_argument("--judge-max-tokens", type=int, default=int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "2048")))
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--ar-embedding-model", default=os.getenv("RAGAS_AR_EMBEDDING_MODEL", "BAAI/bge-m3"),
                         help="Embedding model for Answer Relevancy (multilingual). Defaults to BAAI/bge-m3.")
@@ -1068,6 +1330,14 @@ def main() -> None:
     args = parse_args()
     if args.responses_out is None:
         args.responses_out = args.out.with_name(args.out.stem + "_responses.json")
+    if args.contexts_out is None:
+        args.contexts_out = args.out.with_name(args.out.stem + "_contexts.jsonl")
+    elif str(args.contexts_out) in ("", "."):
+        args.contexts_out = None
+    if args.judge_temperature is not None and args.judge_temperature < 0:
+        args.judge_temperature = None
+    if not args.evaluator_model:
+        args.evaluator_model = DEFAULT_JUDGE_MODEL[args.judge_provider]
     resuming = args.limit == 0
     rows = run_eval(args)
     if rows:

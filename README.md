@@ -349,12 +349,11 @@ Evaluates the RAG pipeline using [RAGAS](https://docs.ragas.io/) metrics with an
 | similar_search   |   200 | Find similar beans                         |
 | news_search      |   200 | Coffee industry news                       |
 
-**Difficulty:** 30% easy, 45% medium, 25% hard | **Language:** 60% Vietnamese, 40% English
+**Difficulty:** 30% easy, 45% medium, 25% hard | **Language (measured):** 492 Vietnamese, 108 English
 
-**Dataset generation:**
-- Template-based question generation from real beans/news data (no fabrication)
-- Ground truth contexts built directly from `coffee_beans.json` and `coffee_news.json`
-- LLM-powered generation also available via `evaluation/generate_dataset.py` (GPT-4o-mini)
+**Dataset generation (v5, `evaluation/generate_dataset.py`):** questions and ground-truth answers are written by GPT-4o-mini, and the ground-truth contexts are the top-5 beans / top-3 news chunks that **this pipeline itself retrieved** at generation time (retrieval-grounded). That makes v5 useful for debugging but circular as a benchmark: any recall measured against it is inflated.
+
+**Dataset v6 (`ragas_eval_dataset_v6.json`, `evaluation/generate_dataset_v6.py`):** retriever-independent and template-based, no LLM. Each case stores the full relevance set `relevant_ids` (every bean matching the metadata constraints, or every article about the named organisation), so Hit@k, Recall@k, Precision@k and MRR are computed from document ids with no judge. 300 Vietnamese / 300 English, 600 cases. Use v6 for any number that goes into a paper.
 
 ### Running Evaluation
 
@@ -370,7 +369,19 @@ python -m evaluation.ragas_eval --mode retrieval --intent product_search
 
 # All cases, resume from previous run
 python -m evaluation.ragas_eval --mode retrieval --limit 0
+
+# v6 benchmark, repeated runs, judge at temperature 0, ID-based IR metrics included
+python -m evaluation.ragas_eval --dataset ragas_eval_dataset_v6.json --mode full --limit 0 \
+    --out evaluation/results/v6/bge_rrf_r1.csv --run-id r1 --seed 1 --judge-temperature 0
+
+# Whole experiment (4 configurations x 3 runs + soft recall), then tables and annotation sample
+bash evaluation/run_v6.sh                                   # Linux / macOS
+powershell -ExecutionPolicy Bypass -File evaluation\run_v6.ps1   # Windows
 ```
+
+**Publication tables:** `evaluation/aggregate_runs.py` keeps two tables apart: a *system table* (configurations compared on the same metrics, mean ± SD across runs, paired Wilcoxon and bootstrap CI against a baseline) and a *metric table* (one system measured with Ragas context recall, the identity-anchored soft recall, and Recall@k side by side). A higher number in the second table is a different ruler, not a better system.
+
+**Human validation:** `evaluation/annotation/` holds a stratified sampler, a single-file labelling tool (`annotate.html`) and `analyze_annotations.py` (Cohen's κ between annotators, Spearman/Kendall of every metric against the human labels). `evaluation/sweep_soft_recall.py` sweeps the soft-recall thresholds offline after one cached embedding pass.
 
 ---
 
@@ -402,7 +413,8 @@ coffee-rag/
 │
 ├── coffee_beans.json                 # Raw data: 14,537 coffee products
 ├── coffee_news.json                  # Raw data: 1,947 news articles
-├── ragas_eval_dataset.json           # Evaluation dataset (500 cases)
+├── ragas_eval_dataset.json           # Evaluation dataset v5 (600 cases, retrieval-grounded)
+├── ragas_eval_dataset_v6.json        # Evaluation dataset v6 (600 cases, retriever-independent, relevance sets)
 │
 ├── data/
 │   ├── processed/
@@ -435,12 +447,21 @@ coffee-rag/
 │       └── build_embeddings.py       # Embedding generation + FAISS indexing
 │
 ├── evaluation/
-│   ├── ragas_eval.py                 # RAGAS evaluation runner
+│   ├── ragas_eval.py                 # RAGAS evaluation runner (+ soft recall, ID-based IR metrics, seeds)
 │   ├── eda.py                        # EDA charts & statistics (10 chart types)
-│   ├── generate_dataset.py           # Eval dataset generator (LLM-powered)
+│   ├── generate_dataset.py           # v5 dataset generator (LLM, retrieval-grounded)
+│   ├── generate_dataset_v6.py        # v6 dataset generator (template, retriever-independent)
+│   ├── aggregate_runs.py             # mean ± SD over runs, paired tests, system/metric tables (CSV + LaTeX)
+│   ├── sweep_soft_recall.py          # threshold sensitivity for soft recall (cached embeddings)
+│   ├── run_v6.sh / run_v6.ps1        # full experiment: 4 configurations x 3 runs
+│   ├── annotation/
+│   │   ├── sample_cases.py           # stratified annotation sample
+│   │   ├── annotate.html             # single-file labelling tool
+│   │   └── analyze_annotations.py    # Cohen's κ, metric-vs-human correlation
 │   ├── fix_ground_truth.py           # Ground truth cleanup utility
 │   └── results/
 │       ├── ragas_results.csv         # Evaluation scores
+│       ├── v6/                       # per-run CSVs, contexts JSONL, tables/
 │       └── charts/                   # Generated EDA charts (PNG)
 │
 └── app/

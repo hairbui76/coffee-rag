@@ -14,7 +14,7 @@ load_dotenv(ROOT / ".env")
 
 BEANS_PATH = ROOT / "data" / "processed" / "beans_clean.parquet"
 CHUNKS_PATH = ROOT / "data" / "processed" / "news_chunks.parquet"
-EMB_DIR = ROOT / "data" / "embeddings"
+EMB_DIR = Path(os.getenv("EMBEDDINGS_DIR") or (ROOT / "data" / "embeddings"))  # override per embedding model
 
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))

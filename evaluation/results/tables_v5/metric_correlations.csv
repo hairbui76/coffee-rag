@@ -1,0 +1,4 @@
+metric_a,metric_b,n,spearman_rho,p
+context_recall,retrieval_recall_soft,600,0.9072324290474744,4.443000453770579e-227
+context_recall,context_precision,600,0.28299028357422024,1.6385490385033925e-12
+retrieval_recall_soft,context_precision,600,0.312872890744138,4.308009529829342e-15

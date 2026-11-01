@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coffee RAG relevance annotation</title>
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#1f1d1a; --muted:#6b665e; --line:#e3ded4; --accent:#7a4b1e; --ok:#2e7d32; --warn:#c77700; --bad:#b3261e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { position:sticky; top:0; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; z-index:2; }
+  header input[type=text] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; }
+  button { padding:6px 12px; border:1px solid var(--line); background:#fff; border-radius:6px; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  main { max-width:980px; margin:0 auto; padding:16px; }
+  .q { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  .q h2 { margin:0 0 6px; font-size:18px; }
+  .meta { color:var(--muted); font-size:13px; }
+  .ctx { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:10px; display:grid; grid-template-columns: 1fr 190px; gap:12px; }
+  .ctx .fields div { margin:2px 0; }
+  .ctx .fields b { color:var(--accent); font-weight:600; }
+  .ctx .desc { color:#3b3732; font-size:13px; margin-top:6px; max-height:7.5em; overflow:auto; }
+  .choice { display:flex; flex-direction:column; gap:6px; }
+  .choice label { display:flex; gap:6px; align-items:center; padding:5px 8px; border:1px solid var(--line); border-radius:6px; cursor:pointer; }
+  .choice label:has(input:checked) { background:#f1e9df; border-color:var(--accent); }
+  .coverage { background:var(--card); border:2px solid var(--accent); border-radius:10px; padding:12px 14px; margin:14px 0; }
+  .coverage .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }
+  .coverage label { padding:8px 12px; border:1px solid var(--line); border-radius:6px; cursor:pointer; }
+  .coverage label:has(input:checked) { background:#f1e9df; border-color:var(--accent); }
+  textarea { width:100%; min-height:48px; border:1px solid var(--line); border-radius:6px; padding:6px; }
+  nav { display:flex; gap:10px; justify-content:space-between; align-items:center; margin:16px 0 40px; }
+  .progress { color:var(--muted); font-size:13px; }
+  .done { color:var(--ok); }
+  .guide { font-size:13px; color:var(--muted); background:#fbf8f2; border:1px dashed var(--line); padding:8px 12px; border-radius:8px; margin-bottom:12px; }
+  kbd { background:#eee; border-radius:3px; padding:0 4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Relevance annotation</strong>
+  <input id="annotator" type="text" placeholder="Tên người gán nhãn (annotator)" size="26">
+  <input id="file" type="file" accept=".json">
+  <button id="export" class="primary">Export labels (JSON)</button>
+  <span id="status" class="progress"></span>
+</header>
+<main>
+  <div class="guide">
+    <b>Hướng dẫn.</b> Với mỗi kết quả: <b>2 = Đúng ý</b> (thỏa mọi ràng buộc người dùng nêu: xuất xứ, độ rang, hương, hoặc đúng bài báo), <b>1 = Một phần</b> (thỏa phần lớn, lệch một ràng buộc), <b>0 = Không liên quan</b>.
+    Cuối mỗi câu, chấm <b>Coverage</b> cho cả tập 5 kết quả: <b>2 = đủ để trả lời tốt</b>, <b>1 = trả lời được một phần</b>, <b>0 = không trả lời được</b>.
+    Không có đáp án mẫu, hãy chấm theo yêu cầu trong câu hỏi. Phím tắt: <kbd>←</kbd> <kbd>→</kbd> chuyển câu, <kbd>1</kbd>–<kbd>5</kbd> rồi <kbd>0</kbd>/<kbd>1</kbd>/<kbd>2</kbd> chấm kết quả. Dữ liệu tự lưu trong trình duyệt.
+  </div>
+  <div id="app"><p class="meta">Chọn file <code>annotation_sample.json</code> để bắt đầu.</p></div>
+</main>
+<script>
+(function () {
+  const state = { sample: null, idx: 0, labels: {}, annotator: '' };
+  const $ = (s) => document.querySelector(s);
+  const storeKey = () => 'coffee-rag-annot:' + (state.sample ? state.sample.seed + ':' : '') + state.annotator;
+
+  function save() {
+    try { localStorage.setItem(storeKey(), JSON.stringify({ idx: state.idx, labels: state.labels })); } catch (e) {}
+    updateStatus();
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(storeKey());
+      if (raw) { const d = JSON.parse(raw); state.labels = d.labels || {}; state.idx = d.idx || 0; }
+    } catch (e) {}
+  }
+  function labelFor(id, n) {
+    if (!state.labels[id]) state.labels[id] = { coverage: null, contexts: Array(n).fill(null), note: '' };
+    return state.labels[id];
+  }
+  function isComplete(c) {
+    const l = state.labels[c.id];
+    return l && l.coverage !== null && l.contexts.every((v) => v !== null);
+  }
+  function updateStatus() {
+    if (!state.sample) return;
+    const done = state.sample.cases.filter(isComplete).length;
+    $('#status').textContent = `${done}/${state.sample.cases.length} hoàn thành`;
+    $('#status').className = 'progress' + (done === state.sample.cases.length ? ' done' : '');
+  }
+  function render() {
+    const app = $('#app');
+    if (!state.sample) return;
+    const c = state.sample.cases[state.idx];
+    const lab = labelFor(c.id, c.contexts.length);
+    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    let html = `<div class="q"><h2>${esc(c.question)}</h2><div class="meta">${state.idx + 1}/${state.sample.cases.length} · ${esc(c.id)} · ${esc(c.intent)} · ${esc(c.difficulty)} · ${esc(c.language)}</div></div>`;
+    c.contexts.forEach((ctx, i) => {
+      const f = ctx.fields || {};
+      let fields = '';
+      if (f.Bean !== undefined) {
+        fields = `<div><b>#${ctx.rank}</b> <b>${esc(f.Bean)}</b> — ${esc(f.Roaster)}</div>
+                  <div><b>Origin:</b> ${esc(f.Origin)} · <b>Country:</b> ${esc(f.Country)} · <b>Roast:</b> ${esc(f.Roast)}</div>
+                  <div><b>Flavor:</b> ${esc(f.Flavor)} · <b>Processing:</b> ${esc(f.Processing)} · <b>Species:</b> ${esc(f.Species)}</div>
+                  <div class="desc">${esc(f.Description)}</div>`;
+      } else if (f.Article !== undefined) {
+        fields = `<div><b>#${ctx.rank}</b> <b>${esc(f.Article)}</b></div>
+                  <div><b>Source:</b> ${esc(f.Source)} · <b>Date:</b> ${esc(f.Date)}</div>
+                  <div class="desc">${esc(f.Content)}</div>`;
+      } else {
+        fields = `<div><b>#${ctx.rank}</b></div><div class="desc">${esc(ctx.raw)}</div>`;
+      }
+      const opts = [[2, 'Đúng ý'], [1, 'Một phần'], [0, 'Không liên quan']].map(([v, t]) =>
+        `<label><input type="radio" name="ctx${i}" value="${v}" ${lab.contexts[i] === v ? 'checked' : ''}> ${v} · ${t}</label>`).join('');
+      html += `<div class="ctx"><div class="fields">${fields}</div><div class="choice" data-i="${i}">${opts}</div></div>`;
+    });
+    const cov = [[2, '2 · Đủ để trả lời tốt'], [1, '1 · Trả lời được một phần'], [0, '0 · Không trả lời được']].map(([v, t]) =>
+      `<label><input type="radio" name="coverage" value="${v}" ${lab.coverage === v ? 'checked' : ''}> ${t}</label>`).join('');
+    html += `<div class="coverage"><b>Coverage của cả tập kết quả so với yêu cầu:</b><div class="row">${cov}</div>
+             <textarea id="note" placeholder="Ghi chú (tuỳ chọn)">${esc(lab.note)}</textarea></div>`;
+    html += `<nav><button id="prev">← Trước</button><span class="progress">${isComplete(c) ? '✔ đã chấm xong câu này' : 'chưa chấm đủ'}</span><button id="next" class="primary">Tiếp →</button></nav>`;
+    app.innerHTML = html;
+
+    // Blur after each choice so arrow keys navigate cases instead of moving inside a radio group.
+    app.querySelectorAll('.choice input').forEach((inp) => inp.addEventListener('change', (e) => {
+      const i = +e.target.closest('.choice').dataset.i; lab.contexts[i] = +e.target.value; e.target.blur(); save(); refreshNav();
+    }));
+    app.querySelectorAll('input[name=coverage]').forEach((inp) => inp.addEventListener('change', (e) => {
+      lab.coverage = +e.target.value; e.target.blur(); save(); refreshNav();
+    }));
+    $('#note').addEventListener('input', (e) => { lab.note = e.target.value; save(); });
+    $('#prev').addEventListener('click', () => go(-1));
+    $('#next').addEventListener('click', () => go(1));
+    updateStatus();
+  }
+  function refreshNav() {
+    const c = state.sample.cases[state.idx];
+    const span = document.querySelector('nav .progress');
+    if (span) span.textContent = isComplete(c) ? '✔ đã chấm xong câu này' : 'chưa chấm đủ';
+  }
+  function go(d) {
+    state.idx = Math.max(0, Math.min(state.sample.cases.length - 1, state.idx + d));
+    save(); render(); window.scrollTo(0, 0);
+  }
+  let pendingCtx = null;
+  document.addEventListener('keydown', (e) => {
+    if (!state.sample || e.target.matches('textarea, input[type=text], input[type=file]')) return;
+    if (e.target.tagName === 'INPUT' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); e.target.blur(); }
+    if (e.key === 'ArrowRight') go(1);
+    else if (e.key === 'ArrowLeft') go(-1);
+    else if (/^[1-5]$/.test(e.key) && pendingCtx === null) { pendingCtx = +e.key - 1; }
+    else if (/^[0-2]$/.test(e.key) && pendingCtx !== null) {
+      const inp = document.querySelector(`.choice[data-i="${pendingCtx}"] input[value="${e.key}"]`);
+      if (inp) { inp.checked = true; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+      pendingCtx = null;
+    } else pendingCtx = null;
+  });
+  $('#annotator').addEventListener('change', (e) => { state.annotator = e.target.value.trim(); load(); render(); });
+  $('#file').addEventListener('change', (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { state.sample = JSON.parse(r.result); state.annotator = $('#annotator').value.trim(); load(); render(); };
+    r.readAsText(f);
+  });
+  $('#export').addEventListener('click', () => {
+    if (!state.sample) return;
+    const annot = state.annotator || 'anonymous';
+    const out = { annotator: annot, sample_seed: state.sample.seed, source: state.sample.source, k: state.sample.k,
+                  exported_at: new Date().toISOString(), labels: {} };
+    state.sample.cases.forEach((c) => { if (state.labels[c.id]) out.labels[c.id] = state.labels[c.id]; });
+    const blob = new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `labels_${annot.replace(/\s+/g, '_')}.json`; a.click();
+  });
+})();
+</script>
+</body>
+</html>

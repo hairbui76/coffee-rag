@@ -18,7 +18,7 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 
-EMB_DIR = ROOT / "data" / "embeddings"
+EMB_DIR = Path(os.getenv("EMBEDDINGS_DIR") or (ROOT / "data" / "embeddings"))  # override per embedding model
 DATA_DIR = ROOT / "data" / "processed"
 
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")

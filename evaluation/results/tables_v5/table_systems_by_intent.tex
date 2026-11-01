@@ -1,0 +1,23 @@
+\begin{table*}[t]
+\centering
+\caption{System comparison by intent, mean $\pm$ SD across runs.}
+\label{tab:systems-intent}
+\begin{tabular}{llcccc}
+\toprule
+System & Intent & Context Precision & Context Recall (Ragas) & Faithfulness & Answer Relevancy \\
+\midrule
+MiniLM & product search & 0.189 & 0.105 & 0.787 & 0.580 \\
+MiniLM & similar search & 0.743 & 0.243 & 0.699 & 0.663 \\
+MiniLM & news search & 0.689 & 0.542 & 0.870 & 0.578 \\
+MiniLM+RRF & product search & 0.434 & 0.418 & 0.815 & 0.718 \\
+MiniLM+RRF & similar search & 0.738 & 0.261 & 0.688 & 0.616 \\
+MiniLM+RRF & news search & 0.816 & 0.607 & 0.892 & 0.695 \\
+BGE-M3 & product search & 0.268 & 0.177 & 0.768 & 0.560 \\
+BGE-M3 & similar search & 0.930 & 0.542 & 0.705 & 0.754 \\
+BGE-M3 & news search & 0.871 & 0.622 & 0.896 & 0.630 \\
+BGE-M3+RRF & product search & 0.641 & 0.550 & 0.802 & 0.643 \\
+BGE-M3+RRF & similar search & 0.925 & 0.547 & 0.690 & 0.773 \\
+BGE-M3+RRF & news search & 0.892 & 0.650 & 0.908 & 0.664 \\
+\bottomrule
+\end{tabular}
+\end{table*}

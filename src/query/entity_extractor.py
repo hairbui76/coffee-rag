@@ -8,13 +8,15 @@ import json
 import os
 import re
 
-from openai import OpenAI
 
 _ROASTER_JUNK_RE = re.compile(
     r"(that has|flavor|notes|with|roast|không|có|hương|vị|từ|rang)", re.IGNORECASE
 )
 
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", os.getenv("OPENAI_MODEL", "gemma4:e4b"))
+# Model follows LLM_PROVIDER (openai / anthropic / ollama). The previous line read
+# OLLAMA_MODEL first, which sent "gemma4:e4b" to OpenAI and silently fell back to
+# rule-based extraction whenever OLLAMA_MODEL was set in .env.
+from src.generation.llm_client import DEFAULT_MODEL  # noqa: E402
 
 EXTRACT_PROMPT = """\
 You are a coffee entity extractor. Extract coffee-related entities from the user query.
@@ -221,7 +223,7 @@ def _clean_flavors(flavors: list[str] | None) -> list[str] | None:
     return cleaned or None
 
 
-def extract_entities(query: str, client: OpenAI | None = None) -> dict:
+def extract_entities(query: str, client=None) -> dict:
     """Try LLM extraction first, fall back to rules."""
     if client:
         try:

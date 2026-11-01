@@ -1,3 +1,5 @@
 .env
 .venv
 __pycache__
+kaggle_upload
+kaggle_upload.zip
