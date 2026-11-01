@@ -22,7 +22,7 @@ Mục tiêu: để Kaggle chạy `evaluation/run_v6.sh` (4 cấu hình × N run 
    python -m evaluation.kaggle.pack_data --zip
    ```
    Tạo `kaggle_upload/` và `kaggle_upload.zip` (~240 MB). Script sẽ báo lỗi nếu file nào đang là git-lfs pointer, khi đó chạy `git lfs pull` trước.
-3. **Tạo Kaggle Dataset:** https://www.kaggle.com/datasets → **New Dataset** → kéo `kaggle_upload.zip` vào → Title: `coffee-rag-data` → Create. Kaggle tự giải nén, kết quả mount tại `/kaggle/input/coffee-rag-data/` với đúng cấu trúc `data/processed/...`, `data/embeddings/...`, `ragas_eval_dataset_v6.json`. Để Private.
+3. **Tạo Kaggle Dataset:** https://www.kaggle.com/datasets → **New Dataset** → kéo `kaggle_upload.zip` vào → Title: `coffee-rag-data` → Create. Kaggle tự giải nén, kết quả mount tại `/kaggle/input/<tên-dataset>/` (ví dụ `coffee_rag_upload`, xem panel Input) với đúng cấu trúc `data/processed/...`, `data/embeddings/...`, `ragas_eval_dataset_v6.json`. Để Private.
 4. **Xác minh số điện thoại** trong Kaggle Settings (bắt buộc để bật Internet và GPU).
 
 ## Tạo notebook
@@ -31,7 +31,7 @@ Mục tiêu: để Kaggle chạy `evaluation/run_v6.sh` (4 cấu hình × N run 
 2. Panel bên phải:
    - **Accelerator:** GPU T4 x2 (hoặc GPU P100).
    - **Internet:** On.
-   - **Add Input** → tab Datasets → tìm `coffee-rag-data` của bạn → Add. Kiểm tra đường dẫn hiện ra là `/kaggle/input/coffee-rag-data`.
+   - **Add Input** → tab Datasets → tìm `coffee-rag-data` của bạn → Add. Copy đường dẫn panel hiện ra vào `DATA_INPUT` (notebook cũng tự dò theo file `ragas_eval_dataset_v6.json` nếu khai sai).
 3. **Add-ons → Secrets** → Add secret:
    - Label `ANTHROPIC_API_KEY`, Value: key của bạn. Bật toggle "attach to notebook".
    - Nếu repo GitHub private: thêm `GITHUB_TOKEN` (Personal Access Token, quyền `repo` read).
