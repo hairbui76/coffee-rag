@@ -22,7 +22,7 @@ Mục tiêu: để Kaggle chạy `evaluation/run_v6.sh` (4 cấu hình × N run 
    python -m evaluation.kaggle.pack_data --zip
    ```
    Tạo `kaggle_upload/` và `kaggle_upload.zip` (~240 MB). Script sẽ báo lỗi nếu file nào đang là git-lfs pointer, khi đó chạy `git lfs pull` trước.
-3. **Tạo Kaggle Dataset:** https://www.kaggle.com/datasets → **New Dataset** → kéo `kaggle_upload.zip` vào → Title: `coffee-rag-data` → Create. Kaggle tự giải nén, kết quả mount tại `/kaggle/input/<tên-dataset>/` (ví dụ `coffee_rag_upload`, xem panel Input) với đúng cấu trúc `data/processed/...`, `data/embeddings/...`, `ragas_eval_dataset_v6.json`. Để Private.
+3. **Tạo Kaggle Dataset:** https://www.kaggle.com/datasets → **New Dataset** → kéo `kaggle_upload.zip` vào → Title: `coffee-rag-data` → Create. Kaggle tự giải nén, kết quả mount tại `/kaggle/input/<tên-dataset>/` (thực tế là `/kaggle/input/datasets/<user>/<tên-dataset>/`, ví dụ `/kaggle/input/datasets/hairbui76/coffee-rag-upload`; xem bằng `!find /kaggle/input -name ragas_eval_dataset_v6.json`) với đúng cấu trúc `data/processed/...`, `data/embeddings/...`, `ragas_eval_dataset_v6.json`. Để Private.
 4. **Xác minh số điện thoại** trong Kaggle Settings (bắt buộc để bật Internet và GPU).
 
 ## Tạo notebook
