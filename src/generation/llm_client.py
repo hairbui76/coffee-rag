@@ -75,8 +75,10 @@ class AnthropicChatClient:
 
     def _create(self, model: str, messages: list[dict], temperature: float = 0.3,
                 max_tokens: int = 1024, stream: bool = False, **_):
+        # anthropic SDK 2.x dropped temperature/top_p from messages.create; the value is ignored.
+        del temperature
         system, rest = self._split(messages)
-        kwargs = dict(model=model, messages=rest, temperature=temperature, max_tokens=max_tokens)
+        kwargs = dict(model=model, messages=rest, max_tokens=max_tokens)
         if system:
             kwargs["system"] = system
         if stream:
@@ -99,7 +101,8 @@ class AnthropicChatClient:
             "description": f"Return the final answer as a {response_format.__name__} object.",
             "input_schema": schema,
         }
-        kwargs = dict(model=model, messages=rest, temperature=temperature, max_tokens=max_tokens,
+        del temperature  # not accepted by anthropic SDK 2.x
+        kwargs = dict(model=model, messages=rest, max_tokens=max_tokens,
                       tools=[tool], tool_choice={"type": "tool", "name": "emit_response"})
         if system:
             kwargs["system"] = system

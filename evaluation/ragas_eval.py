@@ -603,9 +603,13 @@ def build_metrics(
                 llm = llm_factory(evaluator_model, provider="anthropic",
                                   client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), max_retries=6),
                                   **kwargs)
-                # Ragas sets top_p=0.1 by default; Anthropic rejects temperature and top_p together.
+                # anthropic SDK 2.x no longer accepts temperature / top_p / top_k in
+                # messages.create (Ragas adds top_p=0.1 by default). Strip them, so the
+                # judge samples at the provider default; run-to-run variance is covered
+                # by repeated runs (--run-id / --seed).
                 if hasattr(llm, "model_args"):
-                    llm.model_args.pop("top_p", None)
+                    for key in ("top_p", "top_k", "temperature"):
+                        llm.model_args.pop(key, None)
             else:
                 llm = llm_factory(evaluator_model, client=get_client(), **kwargs)
         return llm
