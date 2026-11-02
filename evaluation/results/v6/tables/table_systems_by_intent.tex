@@ -1,0 +1,23 @@
+\begin{table*}[t]
+\centering
+\caption{System comparison by intent, mean $\pm$ SD across runs.}
+\label{tab:systems-intent}
+\begin{tabular}{llcccccccc}
+\toprule
+System & Intent & Context Precision & Context Recall (Ragas) & Faithfulness & Answer Relevancy & Hit@k & Recall@k & Precision@k & MRR \\
+\midrule
+MiniLM & product search & 0.036 $\pm$ 0.000 & 0.016 $\pm$ 0.001 & 0.826 $\pm$ 0.007 & 0.859 $\pm$ 0.002 & 0.155 $\pm$ 0.000 & 0.045 $\pm$ 0.000 & 0.042 $\pm$ 0.000 & 0.103 $\pm$ 0.000 \\
+MiniLM & similar search & 0.820 $\pm$ 0.014 & 0.026 $\pm$ 0.000 & 0.823 $\pm$ 0.004 & 0.810 $\pm$ 0.005 & 0.170 $\pm$ 0.000 & 0.045 $\pm$ 0.000 & 0.039 $\pm$ 0.000 & 0.110 $\pm$ 0.000 \\
+MiniLM & news search & 0.611 $\pm$ 0.004 & 0.530 $\pm$ 0.003 & 0.818 $\pm$ 0.002 & 0.603 $\pm$ 0.011 & 0.775 $\pm$ 0.000 & 0.717 $\pm$ 0.000 & 0.193 $\pm$ 0.000 & 0.655 $\pm$ 0.000 \\
+MiniLM+RRF & product search & 0.328 $\pm$ 0.001 & 0.254 $\pm$ 0.004 & 0.890 $\pm$ 0.001 & 0.866 $\pm$ 0.002 & 0.905 $\pm$ 0.000 & 0.523 $\pm$ 0.000 & 0.439 $\pm$ 0.000 & 0.709 $\pm$ 0.000 \\
+MiniLM+RRF & similar search & 0.793 $\pm$ 0.002 & 0.021 $\pm$ 0.001 & 0.821 $\pm$ 0.004 & 0.786 $\pm$ 0.007 & 0.155 $\pm$ 0.000 & 0.040 $\pm$ 0.000 & 0.034 $\pm$ 0.000 & 0.102 $\pm$ 0.000 \\
+MiniLM+RRF & news search & 0.712 $\pm$ 0.004 & 0.578 $\pm$ 0.005 & 0.837 $\pm$ 0.003 & 0.708 $\pm$ 0.014 & 0.950 $\pm$ 0.000 & 0.879 $\pm$ 0.000 & 0.232 $\pm$ 0.000 & 0.833 $\pm$ 0.000 \\
+BGE-M3 & product search & 0.017 $\pm$ 0.001 & 0.007 $\pm$ 0.000 & 0.841 $\pm$ 0.001 & 0.861 $\pm$ 0.000 & 0.180 $\pm$ 0.000 & 0.044 $\pm$ 0.000 & 0.039 $\pm$ 0.000 & 0.090 $\pm$ 0.000 \\
+BGE-M3 & similar search & 0.829 $\pm$ 0.019 & 0.035 $\pm$ 0.002 & 0.840 $\pm$ 0.004 & 0.824 $\pm$ 0.006 & 0.185 $\pm$ 0.000 & 0.051 $\pm$ 0.000 & 0.043 $\pm$ 0.000 & 0.118 $\pm$ 0.000 \\
+BGE-M3 & news search & 0.747 $\pm$ 0.011 & 0.638 $\pm$ 0.010 & 0.826 $\pm$ 0.010 & 0.739 $\pm$ 0.004 & 0.930 $\pm$ 0.000 & 0.887 $\pm$ 0.000 & 0.252 $\pm$ 0.000 & 0.820 $\pm$ 0.000 \\
+BGE-M3+RRF & product search & 0.316 $\pm$ 0.003 & 0.247 $\pm$ 0.000 & 0.885 $\pm$ 0.005 & 0.869 $\pm$ 0.001 & 0.880 $\pm$ 0.000 & 0.491 $\pm$ 0.000 & 0.412 $\pm$ 0.000 & 0.678 $\pm$ 0.000 \\
+BGE-M3+RRF & similar search & 0.823 $\pm$ 0.018 & 0.023 $\pm$ 0.000 & 0.835 $\pm$ 0.008 & 0.812 $\pm$ 0.016 & 0.170 $\pm$ 0.000 & 0.047 $\pm$ 0.000 & 0.039 $\pm$ 0.000 & 0.116 $\pm$ 0.000 \\
+BGE-M3+RRF & news search & 0.763 $\pm$ 0.004 & 0.648 $\pm$ 0.005 & 0.838 $\pm$ 0.004 & 0.729 $\pm$ 0.011 & 0.965 $\pm$ 0.000 & 0.917 $\pm$ 0.000 & 0.254 $\pm$ 0.000 & 0.884 $\pm$ 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table*}

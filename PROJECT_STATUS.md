@@ -44,6 +44,13 @@ Majors: single runs with a non-deterministic judge (M1, fixed by `--run-id/--see
 
 - Runs go on Kaggle (free GPU, 12 h/session): `evaluation/kaggle/coffee_rag_kaggle.ipynb`, data as Kaggle Dataset `coffee-rag-data` (`evaluation/kaggle/pack_data.py`), guide in `evaluation/kaggle/README.md`. Judge `claude-sonnet-5-5`, pipeline `claude-haiku-5-5`, AR embedding fixed to bge-m3 for every configuration.
 
+## Incident 2026-11-02
+
+- First Kaggle run with judge `claude-sonnet-5-5` exhausted the $500 monthly API budget after about 11 of 12 full runs (~5.2 h, stopped at case 534 of a run with exit 1). Cause: my cost estimate ($5/run) was for gpt-4o-mini; a Sonnet judge costs about $45/run. Measured, now documented in evaluation/README.md and the Kaggle README.
+- Results of the completed runs are in the failed version's Output under `coffee-rag/evaluation/results/v6/`. That Output also contains `coffee-rag/.env` with the API key (packaging cell never ran): keep the notebook private, delete the file after download, rotate the key if the notebook was ever public.
+- Soft recall no longer needs API runs: computed offline from `*_contexts.jsonl` (`SOFT_ONLY=1`).
+- Remaining: finish the interrupted run (~$45) when the budget resets, or report with the runs that are complete.
+
 ## Open items (owner: user)
 
 1. Create `.env` from `.env.example` with `ANTHROPIC_API_KEY` (and `pip install -r requirements.txt` for the `anthropic` SDK).

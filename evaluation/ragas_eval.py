@@ -535,14 +535,18 @@ class SoftRetrievalRecall:
         return SimpleNamespace(value=max(0.0, min(1.0, recall)))
 
 
-def load_existing_ids(csv_path: Path) -> set[str]:
-    """Return the set of case IDs already present in the results CSV."""
+def load_existing_ids(csv_path: Path, skip_errored: bool = False) -> set[str]:
+    """Return the set of case IDs already present in the results CSV.
+
+    With ``skip_errored`` the ids whose ``error`` column is non-empty are left
+    out, so a resume (``--limit 0 --retry-errors``) scores them again."""
     if not csv_path.exists():
         return set()
     try:
         with csv_path.open(encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            return {row["id"] for row in reader if row.get("id")}
+            return {row["id"] for row in reader
+                    if row.get("id") and not (skip_errored and (row.get("error") or "").strip())}
     except Exception:
         return set()
 
@@ -962,7 +966,7 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
         raise ValueError(f"Missing {', '.join(missing)} for the selected metrics "
                          f"(judge provider = {args.judge_provider}, embeddings = {args.ar_embedding_model or args.embedding_model}).")
 
-    skip_ids = load_existing_ids(args.out) if args.limit == 0 else None
+    skip_ids = load_existing_ids(args.out, skip_errored=args.retry_errors) if args.limit == 0 else None
     cases = load_cases(args.dataset, args.limit, args.offset, args.intent, args.language, skip_ids=skip_ids)
     if not cases:
         print("No cases matched filters.")
@@ -990,6 +994,16 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = [None] * total  # type: ignore[list-item]
     context_dump: list[dict[str, Any] | None] = [None] * total
     t_start = time.perf_counter()
+    done_count = [0]
+    FLUSH_EVERY = 20
+
+    def checkpoint() -> None:
+        finished = [r for r in rows if r is not None]
+        if not finished:
+            return
+        write_csv(finished, args.out, merge_existing=True)
+        if args.contexts_out:
+            write_contexts([c for c in context_dump if c is not None], args.contexts_out, merge_existing=True)
 
     ZERO_PRECISION_STOP_RATIO = 0.2
     stop_event = asyncio.Event()
@@ -1088,6 +1102,12 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
 
             log_sample(index + 1, total, case, sample, scores, elapsed, args.verbose, stats)
 
+            # Checkpoint every FLUSH_EVERY finished cases, so a crash (budget exhausted,
+            # session killed) keeps what was scored and --limit 0 resumes from there.
+            done_count[0] += 1
+            if done_count[0] % FLUSH_EVERY == 0:
+                checkpoint()
+
             cp = scores.get("context_precision")
             if cp is not None and cp != "" and float(cp) == 0.0 and intent in RETRIEVAL_INTENTS:
                 zero_precision_count += 1
@@ -1098,7 +1118,13 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
                 print(f"{'!' * 60}\n")
                 stop_event.set()
 
-    await asyncio.gather(*[process_one(i, c) for i, c in enumerate(cases)])
+    try:
+        await asyncio.gather(*[process_one(i, c) for i, c in enumerate(cases)])
+    except BaseException:
+        # Keep every finished case before propagating (pipeline exceptions, Ctrl-C).
+        checkpoint()
+        print(f"\nInterrupted: {sum(1 for r in rows if r is not None)} finished cases saved to {args.out}")
+        raise
 
     total_time = time.perf_counter() - t_start
     completed = [r for r in rows if r is not None]
@@ -1321,6 +1347,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--early-stop", action=argparse.BooleanOptionalAction, default=None,
                         help="Stop when >=20%% of retrieval cases have context_precision=0. "
                              "Default: on for datasets without relevant_ids, off otherwise.")
+    parser.add_argument("--retry-errors", action="store_true",
+                        help="With --limit 0: also re-score cases whose error column is non-empty "
+                             "(e.g. faithfulness truncated by max_tokens).")
     parser.add_argument("--run-id", default="",
                         help="Label for this run (e.g. r1, r2, r3). Stored in every row.")
     parser.add_argument("--seed", type=int, default=None,

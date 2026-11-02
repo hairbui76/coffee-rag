@@ -1,0 +1,15 @@
+\begin{table*}[t]
+\centering
+\caption{System comparison, mean $\pm$ SD across runs (same metrics for every row).}
+\label{tab:systems-overall}
+\begin{tabular}{llcccccccc}
+\toprule
+System & Intent & Context Precision & Context Recall (Ragas) & Faithfulness & Answer Relevancy & Hit@k & Recall@k & Precision@k & MRR \\
+\midrule
+MiniLM & all & 0.489 $\pm$ 0.006 & 0.191 $\pm$ 0.001 & 0.822 $\pm$ 0.002 & 0.757 $\pm$ 0.002 & 0.367 $\pm$ 0.000 & 0.269 $\pm$ 0.000 & 0.091 $\pm$ 0.000 & 0.289 $\pm$ 0.000 \\
+MiniLM+RRF & all & 0.611 $\pm$ 0.002 & 0.284 $\pm$ 0.001 & 0.850 $\pm$ 0.002 & 0.787 $\pm$ 0.004 & 0.670 $\pm$ 0.000 & 0.480 $\pm$ 0.000 & 0.235 $\pm$ 0.000 & 0.548 $\pm$ 0.000 \\
+BGE-M3 & all & 0.531 $\pm$ 0.002 & 0.227 $\pm$ 0.003 & 0.835 $\pm$ 0.005 & 0.808 $\pm$ 0.000 & 0.432 $\pm$ 0.000 & 0.327 $\pm$ 0.000 & 0.111 $\pm$ 0.000 & 0.342 $\pm$ 0.000 \\
+BGE-M3+RRF & all & 0.634 $\pm$ 0.004 & 0.306 $\pm$ 0.002 & 0.853 $\pm$ 0.006 & 0.803 $\pm$ 0.009 & 0.672 $\pm$ 0.000 & 0.485 $\pm$ 0.000 & 0.235 $\pm$ 0.000 & 0.559 $\pm$ 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table*}
