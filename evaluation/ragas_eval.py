@@ -577,7 +577,7 @@ def build_metrics(
     soft_recall: bool = False,
     judge_temperature: float | None = 0.0,
     judge_provider: str = "openai",
-    judge_max_tokens: int = 2048,
+    judge_max_tokens: int = 4096,
 ):
     client = None
     llm = None
@@ -1334,7 +1334,8 @@ def parse_args() -> argparse.Namespace:
                              "when only ANTHROPIC_API_KEY is set, else openai.")
     parser.add_argument("--evaluator-model", default=os.getenv("RAGAS_EVALUATOR_MODEL") or None,
                         help="Judge model id. Default: gpt-4o-mini (openai) or claude-haiku-5-5 (anthropic).")
-    parser.add_argument("--judge-max-tokens", type=int, default=int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "2048")))
+    parser.add_argument("--judge-max-tokens", type=int, default=int(os.getenv("RAGAS_JUDGE_MAX_TOKENS", "4096")),
+                        help="Output budget of the judge. Faithfulness lists every claim, so 2048 can truncate.")
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"))
     parser.add_argument("--ar-embedding-model", default=os.getenv("RAGAS_AR_EMBEDDING_MODEL", "BAAI/bge-m3"),
                         help="Embedding model for Answer Relevancy (multilingual). Defaults to BAAI/bge-m3.")
