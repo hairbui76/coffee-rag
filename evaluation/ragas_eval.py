@@ -597,19 +597,26 @@ def build_metrics(
             if judge_temperature is not None:
                 kwargs["temperature"] = judge_temperature
             if judge_provider == "anthropic":
+                import instructor
                 from anthropic import AsyncAnthropic
+                from ragas.llms.base import InstructorLLM
 
                 # max_retries=6: back off politely on 429 instead of failing the case.
-                llm = llm_factory(evaluator_model, provider="anthropic",
-                                  client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), max_retries=6),
-                                  **kwargs)
+                raw = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), max_retries=6)
+                # Newer instructor defaults to forced tool calls (tool_choice "tool"),
+                # which Claude Sonnet 5.5 rejects. JSON mode asks for a JSON answer in
+                # plain text instead and works on every Claude model.
+                mode_name = os.getenv("RAGAS_ANTHROPIC_MODE", "ANTHROPIC_JSON")
+                mode = getattr(instructor.Mode, mode_name, None)
+                patched = instructor.from_anthropic(raw, mode=mode) if mode else instructor.from_anthropic(raw)
+                llm = InstructorLLM(client=patched, model=evaluator_model, provider="anthropic", **kwargs)
                 # anthropic SDK 2.x no longer accepts temperature / top_p / top_k in
                 # messages.create (Ragas adds top_p=0.1 by default). Strip them, so the
                 # judge samples at the provider default; run-to-run variance is covered
                 # by repeated runs (--run-id / --seed).
-                if hasattr(llm, "model_args"):
-                    for key in ("top_p", "top_k", "temperature"):
-                        llm.model_args.pop(key, None)
+                for key in ("top_p", "top_k", "temperature"):
+                    llm.model_args.pop(key, None)
+                print(f"  judge: anthropic {evaluator_model} via instructor mode={mode_name if mode else 'default'}")
             else:
                 llm = llm_factory(evaluator_model, client=get_client(), **kwargs)
         return llm
@@ -997,8 +1004,10 @@ async def run_eval_async(args: argparse.Namespace) -> list[dict[str, Any]]:
     print(f"  cases={total} (retrieval={retrieval_case_count})  workers={args.workers}  "
           f"evaluator={args.judge_provider}:{args.evaluator_model}")
     print(f"  embeddings: {args.embedding_model}  AR: {args.ar_embedding_model}")
+    temp_note = ("provider default (anthropic SDK 2.x has no temperature parameter)"
+                 if args.judge_provider == "anthropic" else str(args.judge_temperature))
     print(f"  run_id={args.run_id or '-'}  seed={args.seed if args.seed is not None else '-'}  "
-          f"judge_temperature={args.judge_temperature}  rrf={args.use_rrf}")
+          f"judge_temperature={temp_note}  rrf={args.use_rrf}")
     n_with_ids = sum(1 for c in cases if c.get("relevant_ids"))
     print(f"  ID-based IR metrics: {n_with_ids}/{total} cases carry relevant_ids")
     if args.early_stop is None:

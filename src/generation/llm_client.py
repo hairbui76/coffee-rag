@@ -106,13 +106,27 @@ class AnthropicChatClient:
                       tools=[tool], tool_choice={"type": "tool", "name": "emit_response"})
         if system:
             kwargs["system"] = system
-        resp = self._client.messages.create(**kwargs)
+        try:
+            resp = self._client.messages.create(**kwargs)
+        except Exception as exc:  # some models reject forced tool_choice (Sonnet 5.5)
+            if "tool_choice" not in str(exc):
+                raise
+            kwargs["tool_choice"] = {"type": "auto"}
+            kwargs["system"] = (kwargs.get("system", "") + "\n\nAlways answer by calling the emit_response tool.").strip()
+            resp = self._client.messages.create(**kwargs)
         block = next((b for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
-        if block is None:
-            raise ValueError("Anthropic returned no tool_use block for structured output")
-        parsed = response_format.model_validate(block.input)
+        if block is not None:
+            payload = block.input
+        else:
+            # Model answered in text: accept a JSON object if it produced one.
+            text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+            start, end = text.find("{"), text.rfind("}")
+            if start < 0 or end < 0:
+                raise ValueError("Anthropic returned neither a tool_use block nor a JSON object")
+            payload = json.loads(text[start:end + 1])
+        parsed = response_format.model_validate(payload)
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-            parsed=parsed, content=json.dumps(block.input, ensure_ascii=False)))])
+            parsed=parsed, content=json.dumps(payload, ensure_ascii=False)))])
 
 
 def get_client():
